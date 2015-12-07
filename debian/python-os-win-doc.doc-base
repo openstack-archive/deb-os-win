@@ -1,0 +1,9 @@
+Document: python-os-win-doc
+Title: os-win Documentation
+Author: N/A
+Abstract: Sphinx documentation for os-win
+Section: Programming/Python
+
+Format: HTML
+Index: /usr/share/doc/python-os-win-doc/html/index.html
+Files: /usr/share/doc/python-os-win-doc/html/*

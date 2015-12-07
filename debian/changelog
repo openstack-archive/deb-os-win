@@ -1,0 +1,5 @@
+python-os-win (0.0.6-1) unstable; urgency=medium
+
+  * Initial release. (Closes: #807330)
+
+ -- Thomas Goirand <zigo@debian.org>  Mon, 07 Dec 2015 14:47:11 +0100
