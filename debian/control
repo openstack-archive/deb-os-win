@@ -64,26 +64,6 @@ Description: Windows / Hyper-V library for OpenStack projects - Python 2.7
  .
  This package contains the Python 2.7 module.
 
-Package: python3-os-win
-Architecture: all
-Depends: python3-babel (>= 1.3),
-         python3-eventlet (>= 0.17.4),
-         python3-oslo.concurrency (>= 3.0.0),
-         python3-oslo.config (>= 1:3.0.0),
-         python3-oslo.i18n (>= 3.0.0),
-         python3-oslo.log (>= 2.0.0),
-         python3-oslo.service (>= 1.0.0),
-         python3-oslo.utils (>= 3.0.0),
-         ${misc:Depends},
-         ${python3:Depends},
-Suggests: python-os-win-doc,
-Description: Windows / Hyper-V library for OpenStack projects - Python 3.x
- Os-win is a library that contains Windows / Hyper-V code commonly used in the
- OpenStack projects: nova, cinder, networking-hyperv. The library can be used
- in any other OpenStack projects where it is needed.
- .
- This package contains the Python 3.x module.
-
 Package: python-os-win-doc
 Section: doc
 Architecture: all

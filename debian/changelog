@@ -1,3 +1,10 @@
+python-os-win (0.0.6-2) UNRELEASED; urgency=medium
+
+  * d/control: Drop py3 binary package until os-win supports py3.
+    https://bugs.launchpad.net/os-win/+bug/1523539
+
+ -- Corey Bryant <corey.bryant@canonical.com>  Mon, 14 Dec 2015 14:02:33 -0500
+
 python-os-win (0.0.6-1) unstable; urgency=medium
 
   * Initial release. (Closes: #807330)
