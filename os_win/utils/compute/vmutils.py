@@ -20,6 +20,7 @@ Based on the "root/virtualization/v2" namespace available starting with
 Hyper-V Server / Windows Server 2012.
 """
 
+import re
 import sys
 import uuid
 
@@ -33,10 +34,10 @@ import six
 from six.moves import range  # noqa
 
 from os_win._i18n import _, _LW
+from os_win import constants
 from os_win import exceptions
-from os_win.utils import constants
-from os_win.utils import hostutils
 from os_win.utils import jobutils
+from os_win.utils import pathutils
 
 CONF = cfg.CONF
 LOG = logging.getLogger(__name__)
@@ -65,6 +66,7 @@ class VMUtils(object):
         'Msvm_SyntheticEthernetPortSettingData')
     _AFFECTED_JOB_ELEMENT_CLASS = "Msvm_AffectedJobElement"
     _COMPUTER_SYSTEM_CLASS = "Msvm_ComputerSystem"
+    _LOGICAL_IDENTITY_CLASS = 'Msvm_LogicalIdentity'
 
     _VIRTUAL_SYSTEM_SUBTYPE = 'VirtualSystemSubType'
     _VIRTUAL_SYSTEM_TYPE_REALIZED = 'Microsoft:Hyper-V:System:Realized'
@@ -89,19 +91,26 @@ class VMUtils(object):
                             constants.HYPERV_VM_STATE_SUSPENDED: 6}
 
     def __init__(self, host='.'):
+        self._vs_man_svc_attr = None
         self._jobutils = jobutils.JobUtils()
+        self._pathutils = pathutils.PathUtils()
         self._enabled_states_map = {v: k for k, v in
                                     six.iteritems(self._vm_power_states_map)}
         if sys.platform == 'win32':
             self._init_hyperv_wmi_conn(host)
-            # A separate WMI class for VM serial ports has been introduced
-            # in Windows 10 / Windows Server 2016
-            if hostutils.HostUtils().check_min_windows_version(10, 0):
-                self._SERIAL_PORT_SETTING_DATA_CLASS = (
-                    "Msvm_SerialPortSettingData")
+
+        # Physical device names look like \\.\PHYSICALDRIVE1
+        self._phys_dev_name_regex = re.compile(r'\\\\.*\\[\w]*([\d])')
 
     def _init_hyperv_wmi_conn(self, host):
         self._conn = wmi.WMI(moniker='//%s/root/virtualization/v2' % host)
+
+    @property
+    def _vs_man_svc(self):
+        if not self._vs_man_svc_attr:
+            self._vs_man_svc_attr = (
+                self._conn.Msvm_VirtualSystemManagementService()[0])
+        return self._vs_man_svc_attr
 
     def list_instance_notes(self):
         instance_notes = []
@@ -125,13 +134,12 @@ class VMUtils(object):
     def get_vm_summary_info(self, vm_name):
         vm = self._lookup_vm_check(vm_name)
 
-        vs_man_svc = self._conn.Msvm_VirtualSystemManagementService()[0]
         vmsettings = vm.associators(
             wmi_association_class=self._SETTINGS_DEFINE_STATE_CLASS,
             wmi_result_class=self._VIRTUAL_SYSTEM_SETTING_DATA_CLASS)
         settings_paths = [v.path_() for v in vmsettings]
         # See http://msdn.microsoft.com/en-us/library/cc160706%28VS.85%29.aspx
-        (ret_val, summary_info) = vs_man_svc.GetSummaryInformation(
+        (ret_val, summary_info) = self._vs_man_svc.GetSummaryInformation(
             [constants.VM_SUMMARY_NUM_PROCS,
              constants.VM_SUMMARY_ENABLED_STATE,
              constants.VM_SUMMARY_MEMORY_USAGE,
@@ -144,10 +152,10 @@ class VMUtils(object):
         si = summary_info[0]
         memory_usage = None
         if si.MemoryUsage is not None:
-            memory_usage = long(si.MemoryUsage)
+            memory_usage = int(si.MemoryUsage)
         up_time = None
         if si.UpTime is not None:
-            up_time = long(si.UpTime)
+            up_time = int(si.UpTime)
 
         # Nova requires a valid state to be returned. Hyper-V has more
         # states than Nova, typically intermediate ones and since there is
@@ -199,18 +207,19 @@ class VMUtils(object):
         return [s for s in vmsettings if
                 s.VirtualSystemType == self._VIRTUAL_SYSTEM_TYPE_REALIZED][0]
 
-    def _set_vm_memory(self, vm, vmsetting, memory_mb, dynamic_memory_ratio):
+    def _set_vm_memory(self, vmsetting, memory_mb, memory_per_numa_node,
+                       dynamic_memory_ratio):
         mem_settings = vmsetting.associators(
             wmi_result_class=self._MEMORY_SETTING_DATA_CLASS)[0]
 
-        max_mem = long(memory_mb)
+        max_mem = int(memory_mb)
         mem_settings.Limit = max_mem
 
         if dynamic_memory_ratio > 1:
             mem_settings.DynamicMemoryEnabled = True
             # Must be a multiple of 2
             reserved_mem = min(
-                long(max_mem / dynamic_memory_ratio) >> 1 << 1,
+                int(max_mem / dynamic_memory_ratio) >> 1 << 1,
                 max_mem)
         else:
             mem_settings.DynamicMemoryEnabled = False
@@ -220,58 +229,85 @@ class VMUtils(object):
         # Start with the minimum memory
         mem_settings.VirtualQuantity = reserved_mem
 
-        self._jobutils.modify_virt_resource(mem_settings, vm)
+        if memory_per_numa_node:
+            # One memory block is 1 MB.
+            mem_settings.MaxMemoryBlocksPerNumaNode = memory_per_numa_node
 
-    def _set_vm_vcpus(self, vm, vmsetting, vcpus_num, limit_cpu_features):
+        self._jobutils.modify_virt_resource(mem_settings)
+
+    def _set_vm_vcpus(self, vmsetting, vcpus_num, vcpus_per_numa_node,
+                      limit_cpu_features):
         procsetting = vmsetting.associators(
             wmi_result_class=self._PROCESSOR_SETTING_DATA_CLASS)[0]
-        vcpus = long(vcpus_num)
+        vcpus = int(vcpus_num)
         procsetting.VirtualQuantity = vcpus
         procsetting.Reservation = vcpus
         procsetting.Limit = 100000  # static assignment to 100%
         procsetting.LimitProcessorFeatures = limit_cpu_features
 
-        self._jobutils.modify_virt_resource(procsetting, vm)
+        if vcpus_per_numa_node:
+            procsetting.MaxProcessorsPerNumaNode = vcpus_per_numa_node
 
-    def update_vm(self, vm_name, memory_mb, vcpus_num, limit_cpu_features,
-                  dynamic_memory_ratio):
+        self._jobutils.modify_virt_resource(procsetting)
+
+    def update_vm(self, vm_name, memory_mb, memory_per_numa_node, vcpus_num,
+                  vcpus_per_numa_node, limit_cpu_features, dynamic_mem_ratio):
         vm = self._lookup_vm_check(vm_name)
         vmsetting = self._get_vm_setting_data(vm)
-        self._set_vm_memory(vm, vmsetting, memory_mb, dynamic_memory_ratio)
-        self._set_vm_vcpus(vm, vmsetting, vcpus_num, limit_cpu_features)
+        self._set_vm_memory(vmsetting, memory_mb, memory_per_numa_node,
+                            dynamic_mem_ratio)
+        self._set_vm_vcpus(vmsetting, vcpus_num, vcpus_per_numa_node,
+                           limit_cpu_features)
 
     def check_admin_permissions(self):
         if not self._conn.Msvm_VirtualSystemManagementService():
             raise exceptions.HyperVAuthorizationException()
 
-    def create_vm(self, vm_name, memory_mb, vcpus_num, limit_cpu_features,
-                  dynamic_memory_ratio, vm_gen, instance_path, notes=None):
+    def create_vm(self, *args, **kwargs):
+        # TODO(claudiub): method signature changed. Fix this when the usage
+        # for this method was updated.
+        # update_vm should be called in order to set VM's memory and vCPUs.
+        try:
+            self._create_vm(*args, **kwargs)
+        except TypeError:
+            # the method call was updated to use the _vnuma_create_vm interface
+            self._vnuma_create_vm(*args, **kwargs)
+
+    def _vnuma_create_vm(self, vm_name, vnuma_enabled, vm_gen, instance_path,
+                         notes=None):
+        LOG.debug('Creating VM %s', vm_name)
+        self._create_vm_obj(vm_name, vnuma_enabled, vm_gen, notes,
+                            instance_path)
+
+    def _create_vm(self, vm_name, memory_mb, vcpus_num, limit_cpu_features,
+                   dynamic_memory_ratio, vm_gen, instance_path, notes=None):
         """Creates a VM."""
-        vs_man_svc = self._conn.Msvm_VirtualSystemManagementService()[0]
 
         LOG.debug('Creating VM %s', vm_name)
-        vm = self._create_vm_obj(vs_man_svc, vm_name, vm_gen, notes,
-                                 dynamic_memory_ratio, instance_path)
+
+        # vNUMA and dynamic memory are mutually exclusive
+        vnuma_enabled = False if dynamic_memory_ratio > 1 else True
+
+        vm = self._create_vm_obj(vm_name, vnuma_enabled, vm_gen, notes,
+                                 instance_path)
 
         vmsetting = self._get_vm_setting_data(vm)
 
         LOG.debug('Setting memory for vm %s', vm_name)
-        self._set_vm_memory(vm, vmsetting, memory_mb, dynamic_memory_ratio)
+        self._set_vm_memory(vmsetting, memory_mb, None, dynamic_memory_ratio)
 
         LOG.debug('Set vCPUs for vm %s', vm_name)
-        self._set_vm_vcpus(vm, vmsetting, vcpus_num, limit_cpu_features)
+        self._set_vm_vcpus(vmsetting, vcpus_num, None, limit_cpu_features)
 
-    def _create_vm_obj(self, vs_man_svc, vm_name, vm_gen, notes,
-                       dynamic_memory_ratio, instance_path):
+    def _create_vm_obj(self, vm_name, vnuma_enabled, vm_gen, notes,
+                       instance_path):
         vs_data = self._conn.Msvm_VirtualSystemSettingData.new()
         vs_data.ElementName = vm_name
         vs_data.Notes = notes
         # Don't start automatically on host boot
         vs_data.AutomaticStartupAction = self._AUTOMATIC_STARTUP_ACTION_NONE
 
-        # vNUMA and dynamic memory are mutually exclusive
-        if dynamic_memory_ratio > 1:
-            vs_data.VirtualNumaEnabled = False
+        vs_data.VirtualNumaEnabled = vnuma_enabled
 
         if vm_gen == constants.VM_GEN_2:
             vs_data.VirtualSystemSubType = self._VIRTUAL_SYSTEM_SUBTYPE_GEN2
@@ -287,18 +323,17 @@ class VMUtils(object):
 
         (job_path,
          vm_path,
-         ret_val) = vs_man_svc.DefineSystem(ResourceSettings=[],
-                                            ReferenceConfiguration=None,
-                                            SystemSettings=vs_data.GetText_(1))
+         ret_val) = self._vs_man_svc.DefineSystem(
+            ResourceSettings=[], ReferenceConfiguration=None,
+            SystemSettings=vs_data.GetText_(1))
         job = self._jobutils.check_ret_val(ret_val, job_path)
         if not vm_path and job:
             vm_path = job.associators(self._AFFECTED_JOB_ELEMENT_CLASS)[0]
         return self._get_wmi_obj(vm_path)
 
-    def _modify_virtual_system(self, vs_man_svc, vm_path, vmsetting):
-        (job_path, ret_val) = vs_man_svc.ModifyVirtualSystem(
-            ComputerSystem=vm_path,
-            SystemSettingData=vmsetting.GetText_(1))[1:]
+    def _modify_virtual_system(self, vmsetting):
+        (job_path, ret_val) = self._vs_man_svc.ModifySystemSettings(
+            SystemSettings=vmsetting.GetText_(1))
         self._jobutils.check_ret_val(ret_val, job_path)
 
     def get_vm_scsi_controller(self, vm_name):
@@ -421,7 +456,7 @@ class VMUtils(object):
         self._jobutils.add_virt_resource(scsicontrl, vm)
 
     def attach_volume_to_controller(self, vm_name, controller_path, address,
-                                    mounted_disk_path):
+                                    mounted_disk_path, serial=None):
         """Attach a volume to a controller."""
 
         vm = self._lookup_vm_check(vm_name)
@@ -433,13 +468,35 @@ class VMUtils(object):
         diskdrive.Parent = controller_path
         diskdrive.HostResource = [mounted_disk_path]
 
-        self._jobutils.add_virt_resource(diskdrive, vm)
+        diskdrive_path = self._jobutils.add_virt_resource(diskdrive, vm)[0]
+
+        if serial:
+            # Apparently this can't be set when the resource is added.
+            diskdrive = wmi.WMI(moniker=diskdrive_path)
+            diskdrive.ElementName = serial
+            self._jobutils.modify_virt_resource(diskdrive)
+
+    def get_vm_physical_disk_mapping(self, vm_name):
+        mapping = {}
+        physical_disks = self.get_vm_disks(vm_name)[1]
+        for diskdrive in physical_disks:
+            mapping[diskdrive.ElementName] = dict(
+                resource_path=diskdrive.Path_(),
+                mounted_disk_path=diskdrive.HostResource[0])
+        return mapping
 
     def _get_disk_resource_address(self, disk_resource):
         return disk_resource.AddressOnParent
 
+    def set_disk_host_res(self, disk_res_path, mounted_disk_path):
+        diskdrive = wmi.WMI(moniker=disk_res_path)
+        diskdrive.HostResource = [mounted_disk_path]
+        self._jobutils.modify_virt_resource(diskdrive)
+
     def set_disk_host_resource(self, vm_name, controller_path, address,
                                mounted_disk_path):
+        # TODO(lpetrut): remove this method after the patch fixing
+        # swapped disks after host reboot merges in Nova.
         disk_found = False
         vm = self._lookup_vm_check(vm_name)
         (disk_resources, volume_resources) = self._get_vm_disks(vm)
@@ -454,7 +511,7 @@ class VMUtils(object):
                               {'old': disk_resource.HostResource[0],
                                'new': mounted_disk_path})
                     disk_resource.HostResource = [mounted_disk_path]
-                    self._jobutils.modify_virt_resource(disk_resource, vm)
+                    self._jobutils.modify_virt_resource(disk_resource)
                 disk_found = True
                 break
         if not disk_found:
@@ -491,10 +548,9 @@ class VMUtils(object):
         :param vm_name: The name of the VM which has the NIC to be destroyed.
         :param nic_name: The NIC's ElementName.
         """
+        # TODO(claudiub): remove vm_name argument, no longer used.
         nic_data = self._get_nic_data_by_name(nic_name)
-
-        vm = self._lookup_vm_check(vm_name)
-        self._jobutils.remove_virt_resource(nic_data, vm)
+        self._jobutils.remove_virt_resource(nic_data)
 
     def soft_shutdown_vm(self, vm_name):
         vm = self._lookup_vm_check(vm_name)
@@ -542,6 +598,10 @@ class VMUtils(object):
 
         return (disk_files, volume_drives)
 
+    def get_vm_disks(self, vm_name):
+        vm = self._lookup_vm_check(vm_name)
+        return self._get_vm_disks(vm)
+
     def _get_vm_disks(self, vm):
         vmsettings = vm.associators(
             wmi_result_class=self._VIRTUAL_SYSTEM_SETTING_DATA_CLASS)
@@ -565,9 +625,8 @@ class VMUtils(object):
     def destroy_vm(self, vm_name):
         vm = self._lookup_vm_check(vm_name)
 
-        vs_man_svc = self._conn.Msvm_VirtualSystemManagementService()[0]
         # Remove the VM. It does not destroy any associated virtual disk.
-        (job_path, ret_val) = vs_man_svc.DestroySystem(vm.path_())
+        (job_path, ret_val) = self._vs_man_svc.DestroySystem(vm.path_())
         self._jobutils.check_ret_val(ret_val, job_path)
 
     def _get_wmi_obj(self, path):
@@ -633,8 +692,13 @@ class VMUtils(object):
 
         return dvd_paths
 
+    def is_disk_attached(self, disk_path, is_physical=True):
+        disk_resource = self._get_mounted_disk_resource_from_path(disk_path,
+                                                                  is_physical)
+        return disk_resource is not None
+
     def detach_vm_disk(self, vm_name, disk_path, is_physical=True):
-        vm = self._lookup_vm_check(vm_name)
+        # TODO(claudiub): remove vm_name argument, no longer used.
         disk_resource = self._get_mounted_disk_resource_from_path(disk_path,
                                                                   is_physical)
 
@@ -644,9 +708,9 @@ class VMUtils(object):
                                       "WHERE __PATH = '%s'" %
                                       disk_resource.Parent)[0]
 
-            self._jobutils.remove_virt_resource(disk_resource, vm)
+            self._jobutils.remove_virt_resource(disk_resource)
             if not is_physical:
-                self._jobutils.remove_virt_resource(parent, vm)
+                self._jobutils.remove_virt_resource(parent)
 
     def _get_mounted_disk_resource_from_path(self, disk_path, is_physical):
         if is_physical:
@@ -669,6 +733,14 @@ class VMUtils(object):
             if disk_resource.HostResource:
                 if disk_resource.HostResource[0].lower() == disk_path.lower():
                     return disk_resource
+
+    def get_device_number_from_device_name(self, device_name):
+        matches = self._phys_dev_name_regex.findall(device_name)
+        if matches:
+            return matches[0]
+        else:
+            err_msg = _("Could not find device number for device: %s")
+            raise exceptions.HyperVException(err_msg % device_name)
 
     def get_mounted_disk_by_drive_number(self, device_number):
         mounted_disks = self._conn.query("SELECT * FROM Msvm_DiskDrive "
@@ -704,6 +776,8 @@ class VMUtils(object):
             _("Exceeded the maximum number of slots"))
 
     def get_vm_serial_port_connection(self, vm_name, update_connection=None):
+        # TODO(lpetrut): Remove this method after the patch implementing
+        # serial console access support merges in Nova.
         vm = self._lookup_vm_check(vm_name)
 
         vmsettings = vm.associators(
@@ -716,10 +790,37 @@ class VMUtils(object):
 
         if update_connection:
             serial_port.Connection = [update_connection]
-            self._jobutils.modify_virt_resource(serial_port, vm)
+            self._jobutils.modify_virt_resource(serial_port)
 
         if len(serial_port.Connection) > 0:
             return serial_port.Connection[0]
+
+    def _get_vm_serial_ports(self, vm):
+        vmsettings = vm.associators(
+            wmi_result_class=self._VIRTUAL_SYSTEM_SETTING_DATA_CLASS)
+        rasds = vmsettings[0].associators(
+            wmi_result_class=self._SERIAL_PORT_SETTING_DATA_CLASS)
+        serial_ports = (
+            [r for r in rasds if
+             r.ResourceSubType == self._SERIAL_PORT_RES_SUB_TYPE]
+        )
+        return serial_ports
+
+    def set_vm_serial_port_connection(self, vm_name, port_number, pipe_path):
+        vm = self._lookup_vm_check(vm_name)
+
+        serial_port = self._get_vm_serial_ports(vm)[port_number - 1]
+        serial_port.Connection = [pipe_path]
+
+        self._modify_virt_resource(serial_port, vm.path_())
+
+    def get_vm_serial_port_connections(self, vm_name):
+        vm = self._lookup_vm_check(vm_name)
+        serial_ports = self._get_vm_serial_ports(vm)
+        conns = [serial_port.Connection[0]
+                 for serial_port in serial_ports
+                 if serial_port.Connection and serial_port.Connection[0]]
+        return conns
 
     def get_active_instances(self):
         """Return the names of all the active instances known to Hyper-V."""
@@ -805,8 +906,7 @@ class VMUtils(object):
         vm = self._lookup_vm_check(vm_name)
         vs_data = self._get_vm_setting_data(vm)
         self._set_secure_boot(vs_data, msft_ca_required)
-        vs_man_svc = self._conn.Msvm_VirtualSystemManagementService()[0]
-        self._modify_virtual_system(vs_man_svc, vm.path_(), vs_data)
+        self._modify_virtual_system(vs_data)
 
     def _set_secure_boot(self, vs_data, msft_ca_required):
         vs_data.SecureBootEnabled = True
@@ -814,3 +914,64 @@ class VMUtils(object):
             raise exceptions.HyperVException(
                 _('UEFI SecureBoot is supported only on Windows instances for '
                   'this Hyper-V version.'))
+
+    def set_disk_qos_specs(self, disk_path, max_iops=None, min_iops=None):
+        if min_iops is None and max_iops is None:
+            LOG.debug("Skipping setting disk QoS specs as no "
+                      "value was provided.")
+            return
+
+        disk_resource = self._get_mounted_disk_resource_from_path(
+            disk_path, is_physical=False)
+
+        if max_iops is not None:
+            disk_resource.IOPSLimit = max_iops
+        if min_iops is not None:
+            disk_resource.IOPSReservation = min_iops
+
+        self._jobutils.modify_virt_resource(disk_resource)
+
+    def _is_drive_physical(self, drive_path):
+        # TODO(atuvenie): Find better way to check if path represents
+        # physical or virtual drive.
+        return not self._pathutils.exists(drive_path)
+
+    def _drive_to_boot_source(self, drive_path):
+        is_physical = self._is_drive_physical(drive_path)
+        drive = self._get_mounted_disk_resource_from_path(
+            drive_path, is_physical=is_physical)
+
+        if is_physical:
+            bssd = drive.associators(
+                wmi_association_class=self._LOGICAL_IDENTITY_CLASS)[0]
+        else:
+            rasd = wmi.WMI(moniker=drive.Parent)
+            bssd = rasd.associators(
+                wmi_association_class=self._LOGICAL_IDENTITY_CLASS)[0]
+        return bssd
+
+    def set_boot_order(self, vm_name, device_boot_order):
+        if self.get_vm_generation(vm_name) == constants.VM_GEN_1:
+            self._set_boot_order_gen1(vm_name, device_boot_order)
+        else:
+            self._set_boot_order_gen2(vm_name, device_boot_order)
+
+    def _set_boot_order_gen1(self, vm_name, device_boot_order):
+        vm = self._lookup_vm_check(vm_name)
+
+        vssd = self._get_vm_setting_data(vm)
+        vssd.BootOrder = tuple(device_boot_order)
+
+        self._modify_virtual_system(vssd)
+
+    def _set_boot_order_gen2(self, vm_name, device_boot_order):
+        new_boot_order = [(self._drive_to_boot_source(device)).path_()
+                           for device in device_boot_order if device]
+
+        vm = self._lookup_vm_check(vm_name)
+
+        vssd = self._get_vm_setting_data(vm)
+        old_boot_order = vssd.BootSourceOrder
+        network_boot_devs = set(old_boot_order) ^ set(new_boot_order)
+        vssd.BootSourceOrder = tuple(new_boot_order) + tuple(network_boot_devs)
+        self._modify_virtual_system(vssd)

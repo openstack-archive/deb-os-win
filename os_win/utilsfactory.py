@@ -59,6 +59,12 @@ utils_map = {
             'max_version': None,
             'path': 'os_win.utils.storage.target.iscsi_target_utils.'
                     'ISCSITargetUtils'}},
+    'fc_utils': {
+        'FCUtils': {
+            'min_version': 6.2,
+            'max_version': None,
+            'path': 'os_win.utils.storage.initiator.fc_utils.'
+                    'FCUtils'}},
     'livemigrationutils': {
         'LiveMigrationUtils': {
             'min_version': 6.2,
@@ -104,11 +110,11 @@ utils_map = {
 
 def _get_class(class_type):
     if class_type not in utils_map:
-        raise exceptions.HyperVException(_('Class type %(class)s does '
+        raise exceptions.HyperVException(_('Class type %s does '
                                            'not exist') % class_type)
 
     windows_version = utils.get_windows_version()
-    build = map(int, windows_version.split('.'))
+    build = list(map(int, windows_version.split('.')))
     windows_version = float("%i.%i" % (build[0], build[1]))
 
     existing_classes = utils_map.get(class_type)
@@ -169,3 +175,7 @@ def get_iscsi_target_utils():
 
 def get_named_pipe_handler(*args, **kwargs):
     return namedpipe.NamedPipeHandler(*args, **kwargs)
+
+
+def get_fc_utils():
+    return _get_class(class_type='fc_utils')

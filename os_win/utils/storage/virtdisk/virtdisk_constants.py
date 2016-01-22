@@ -15,10 +15,10 @@
 
 from oslo_utils import units
 
-from os_win.utils import constants
+from os_win import constants
 
-VHD_SIGNATURE = 'conectix'
-VHDX_SIGNATURE = 'vhdxfile'
+VHD_SIGNATURE = b'conectix'
+VHDX_SIGNATURE = b'vhdxfile'
 
 VIRTUAL_STORAGE_TYPE_DEVICE_ISO = 1
 VIRTUAL_STORAGE_TYPE_DEVICE_VHD = 2

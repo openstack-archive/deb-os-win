@@ -14,7 +14,7 @@
 #    under the License.
 
 """
-Constants used in ops classes
+Hyper-V / Windows related constants.
 """
 
 HYPERV_VM_STATE_OTHER = 1
@@ -35,6 +35,31 @@ VM_SUMMARY_ENABLED_STATE = 100
 VM_SUMMARY_MEMORY_USAGE = 103
 VM_SUMMARY_UPTIME = 105
 
+
+ARCH_I686 = 0
+ARCH_MIPS = 1
+ARCH_ALPHA = 2
+ARCH_PPC = 3
+ARCH_ARMV7 = 5
+ARCH_IA64 = 6
+ARCH_X86_64 = 9
+
+
+PROCESSOR_FEATURE = {
+    3: 'mmx',
+    6: 'sse',
+    7: '3dnow',
+    8: 'rdtsc',
+    9: 'pae',
+    10: 'sse2',
+    12: 'nx',
+    13: 'sse3',
+    17: 'xsave',
+    20: 'slat',
+    21: 'vmx',
+}
+
+
 CTRL_TYPE_IDE = "IDE"
 CTRL_TYPE_SCSI = "SCSI"
 
@@ -42,6 +67,7 @@ DISK = "VHD"
 DISK_FORMAT = DISK
 DVD = "DVD"
 DVD_FORMAT = "ISO"
+VOLUME = "VOLUME"
 
 DISK_FORMAT_MAP = {
     DISK_FORMAT.lower(): DISK,
@@ -56,6 +82,11 @@ VHD_TYPE_DYNAMIC = 3
 VHD_TYPE_DIFFERENCING = 4
 
 SCSI_CONTROLLER_SLOTS_NUMBER = 64
+IDE_CONTROLLER_SLOTS_NUMBER = 2
+
+_BDI_DEVICE_TYPE_TO_DRIVE_TYPE = {'disk': DISK,
+                                  'cdrom': DVD}
+
 
 HOST_POWER_ACTION_SHUTDOWN = "shutdown"
 HOST_POWER_ACTION_REBOOT = "reboot"
@@ -83,3 +114,8 @@ TYPE_VLAN = 'vlan'
 
 SERIAL_CONSOLE_BUFFER_SIZE = 4 << 10
 MAX_CONSOLE_LOG_FILE_SIZE = 1 << 19  # 512kB
+
+BOOT_DEVICE_FLOPPY = 0
+BOOT_DEVICE_CDROM = 1
+BOOT_DEVICE_HARDDISK = 2
+BOOT_DEVICE_NETWORK = 3

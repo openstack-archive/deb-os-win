@@ -15,8 +15,8 @@
 import mock
 from oslotest import base
 
+from os_win import constants
 from os_win import exceptions
-from os_win.utils import constants
 from os_win.utils import jobutils
 
 
@@ -36,6 +36,14 @@ class JobUtilsTestCase(base.BaseTestCase):
         super(JobUtilsTestCase, self).setUp()
         self.jobutils = jobutils.JobUtils()
         self.jobutils._conn = mock.MagicMock()
+
+    def test_vs_man_svc(self):
+        expected = self.jobutils._conn.Msvm_VirtualSystemManagementService()[0]
+        self.assertEqual(expected, self.jobutils._vs_man_svc)
+
+    def test_vs_man_svc_cached(self):
+        self.jobutils._vs_man_svc_attr = mock.sentinel.fake_svc
+        self.assertEqual(mock.sentinel.fake_svc, self.jobutils._vs_man_svc)
 
     @mock.patch.object(jobutils.JobUtils, '_wait_for_job')
     def test_check_ret_val_started(self, mock_wait_for_job):
@@ -149,7 +157,7 @@ class JobUtilsTestCase(base.BaseTestCase):
     @mock.patch('eventlet.greenthread.sleep')
     def _check_modify_virt_resource_max_retries(
             self, mock_sleep, side_effect, num_calls=1, expected_fail=False):
-        mock_svc = self.jobutils._conn.Msvm_VirtualSystemManagementService()[0]
+        mock_svc = self.jobutils._vs_man_svc
         mock_svc.ModifyResourceSettings.side_effect = side_effect
         mock_res_setting_data = mock.MagicMock()
         mock_res_setting_data.GetText_.return_value = mock.sentinel.res_data
@@ -157,10 +165,9 @@ class JobUtilsTestCase(base.BaseTestCase):
         if expected_fail:
             self.assertRaises(exceptions.HyperVException,
                               self.jobutils.modify_virt_resource,
-                              mock_res_setting_data, mock.sentinel.fake_path)
+                              mock_res_setting_data)
         else:
-            self.jobutils.modify_virt_resource(mock_res_setting_data,
-                                               mock.sentinel.fake_path)
+            self.jobutils.modify_virt_resource(mock_res_setting_data)
 
         mock_calls = [
             mock.call(ResourceSettings=[mock.sentinel.res_data])] * num_calls
@@ -174,7 +181,7 @@ class JobUtilsTestCase(base.BaseTestCase):
 
     def test_remove_virt_resource(self):
         self._test_virt_method('RemoveResourceSettings', 2,
-                               'remove_virt_resource', True,
+                               'remove_virt_resource', False,
                                ResourceSettings=[mock.sentinel.res_path])
 
     def test_add_virt_feature(self):
@@ -189,7 +196,7 @@ class JobUtilsTestCase(base.BaseTestCase):
 
     def _test_virt_method(self, vsms_method_name, return_count,
                           utils_method_name, with_mock_vm, *args, **kwargs):
-        mock_svc = self.jobutils._conn.Msvm_VirtualSystemManagementService()[0]
+        mock_svc = self.jobutils._vs_man_svc
         vsms_method = getattr(mock_svc, vsms_method_name)
         mock_rsd = self._mock_vsms_method(vsms_method, return_count)
         if with_mock_vm:

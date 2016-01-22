@@ -1,4 +1,5 @@
 # Copyright 2015 Cloudbase Solutions Srl
+#
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -13,17 +14,17 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from os_win.utils.compute import vmutils
+import mock
+from oslotest import base
+from six.moves import builtins
 
 
-class VMUtils10(vmutils.VMUtils):
+class OsWinBaseTestCase(base.BaseTestCase):
+    def setUp(self):
+        super(OsWinBaseTestCase, self).setUp()
 
-    _UEFI_CERTIFICATE_AUTH = 'MicrosoftUEFICertificateAuthority'
-    _SERIAL_PORT_SETTING_DATA_CLASS = "Msvm_SerialPortSettingData"
-
-    def _set_secure_boot(self, vs_data, msft_ca_required):
-        vs_data.SecureBootEnabled = True
-        if msft_ca_required:
-            uefi_data = self._conn.Msvm_VirtualSystemSettingData(
-                ElementName=self._UEFI_CERTIFICATE_AUTH)[0]
-            vs_data.SecureBootTemplateId = uefi_data.SecureBootTemplateId
+        self._mock_wmi = mock.MagicMock()
+        wmi_patcher = mock.patch.object(builtins, 'wmi', create=True,
+                                        new=self._mock_wmi)
+        wmi_patcher.start()
+        self.addCleanup(mock.patch.stopall)

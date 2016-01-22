@@ -19,9 +19,9 @@ Unit tests for the Hyper-V utils factory.
 
 import mock
 from oslo_config import cfg
-from oslotest import base
 
 from os_win import exceptions
+from os_win.tests import test_base
 from os_win.utils.compute import livemigrationutils
 from os_win.utils.compute import rdpconsoleutils
 from os_win.utils.compute import vmutils
@@ -37,13 +37,18 @@ from os_win import utilsfactory
 CONF = cfg.CONF
 
 
-class TestHyperVUtilsFactory(base.BaseTestCase):
+class TestHyperVUtilsFactory(test_base.OsWinBaseTestCase):
 
     @mock.patch.object(utilsfactory.utils, 'get_windows_version')
-    def test_get_class_not_found(self, mock_get_windows_version):
+    def test_get_class_unsupported_win_version(self, mock_get_windows_version):
         mock_get_windows_version.return_value = '5.2'
         self.assertRaises(exceptions.HyperVException, utilsfactory._get_class,
                           'hostutils')
+
+    def test_get_class_unsupported_class_type(self):
+        self.assertRaises(exceptions.HyperVException,
+                          utilsfactory._get_class,
+                          'invalid_class_type')
 
     @mock.patch.object(utilsfactory.utils, 'get_windows_version')
     def _check_get_class(self, mock_get_windows_version, expected_class,
@@ -106,3 +111,9 @@ class TestHyperVUtilsFactory(base.BaseTestCase):
 
         actual_class = type(utilsfactory.get_iscsi_initiator_utils())
         self.assertEqual(expected_class, actual_class)
+
+    @mock.patch('os_win.utils.storage.initiator.fc_utils.FCUtils')
+    def test_get_fc_utils(self, mock_cls_fcutils):
+        self._check_get_class(
+            expected_class=type(mock_cls_fcutils.return_value),
+            class_type='fc_utils')

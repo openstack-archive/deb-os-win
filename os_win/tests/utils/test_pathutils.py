@@ -13,15 +13,16 @@
 #    under the License.
 
 import os
+import six
 
 import mock
-from oslotest import base
 
 from os_win import exceptions
+from os_win.tests import test_base
 from os_win.utils import pathutils
 
 
-class PathUtilsTestCase(base.BaseTestCase):
+class PathUtilsTestCase(test_base.OsWinBaseTestCase):
     """Unit tests for the Hyper-V PathUtils class."""
 
     def setUp(self):
@@ -31,8 +32,6 @@ class PathUtilsTestCase(base.BaseTestCase):
         self._pathutils = pathutils.PathUtils()
         self._pathutils._win32_utils = mock.Mock()
         self._mock_run = self._pathutils._win32_utils.run_and_check_output
-
-        self.addCleanup(mock.patch.stopall)
 
     def _setup_lib_mocks(self):
         self._ctypes = mock.Mock()
@@ -74,8 +73,8 @@ class PathUtilsTestCase(base.BaseTestCase):
         mock_rmtree.side_effect = [WindowsError(
             pathutils.ERROR_DIR_IS_NOT_EMPTY), True]
         fake_windows_error = WindowsError
-        with mock.patch('__builtin__.WindowsError',
-                        fake_windows_error, create=True):
+        with mock.patch.object(six.moves.builtins, 'WindowsError',
+                               fake_windows_error, create=True):
             self._pathutils.rmtree(mock.sentinel.FAKE_PATH)
 
         mock_sleep.assert_called_once_with(1)

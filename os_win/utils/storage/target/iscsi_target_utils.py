@@ -21,8 +21,8 @@ if sys.platform == 'win32':
 from oslo_log import log as logging
 
 from os_win._i18n import _, _LI
+from os_win import constants
 from os_win import exceptions
-from os_win.utils import constants
 from os_win.utils import hostutils
 from os_win.utils import pathutils
 from os_win.utils import win32utils
@@ -69,7 +69,7 @@ class ISCSITargetUtils(object):
         wt_portals = self._conn_wmi.WT_Portal()
 
         if available_only:
-            wt_portals = filter(lambda portal: portal.Listen, wt_portals)
+            wt_portals = list(filter(lambda portal: portal.Listen, wt_portals))
 
         if not wt_portals and fail_if_none_found:
             err_msg = _("No valid iSCSI portal was found.")
@@ -100,7 +100,7 @@ class ISCSITargetUtils(object):
             err_msg = _('Could not find WT Disk: %s')
             raise exceptions.ISCSITargetException(err_msg % description)
 
-    def _get_wt_snapshot(self, description, fail_if_not_found):
+    def _get_wt_snapshot(self, description, fail_if_not_found=True):
         wt_snapshots = self._conn_wmi.WT_Snapshot(Description=description)
         if wt_snapshots:
             return wt_snapshots[0]

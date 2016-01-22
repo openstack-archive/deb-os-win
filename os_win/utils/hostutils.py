@@ -22,20 +22,29 @@ if sys.platform == 'win32':
 
 from oslo_log import log as logging
 
-from os_win._i18n import _
+from os_win._i18n import _, _LW
+from os_win import constants
 from os_win import exceptions
-from os_win.utils import constants
 
 LOG = logging.getLogger(__name__)
 
 
 class HostUtils(object):
 
+    _windows_version = None
+
+    _MSVM_PROCESSOR = 'Msvm_Processor'
+    _MSVM_MEMORY = 'Msvm_Memory'
+    _MSVM_NUMA_NODE = 'Msvm_NumaNode'
+
+    _CENTRAL_PROCESSOR = 'Central Processor'
+
     _HOST_FORCED_REBOOT = 6
     _HOST_FORCED_SHUTDOWN = 12
     _DEFAULT_VM_GENERATION = constants.IMAGE_PROP_VM_GEN_1
 
     FEATURE_RDS_VIRTUALIZATION = 322
+    FEATURE_MPIO = 57
 
     def __init__(self):
         self._virt_v2 = None
@@ -80,8 +89,8 @@ class HostUtils(object):
         mem_info = self._conn_cimv2.query("SELECT TotalVisibleMemorySize, "
                                           "FreePhysicalMemory "
                                           "FROM win32_operatingsystem")[0]
-        return (long(mem_info.TotalVisibleMemorySize),
-                long(mem_info.FreePhysicalMemory))
+        return (int(mem_info.TotalVisibleMemorySize),
+                int(mem_info.FreePhysicalMemory))
 
     def get_volume_info(self, drive):
         """Returns a tuple with total size and free space
@@ -91,14 +100,17 @@ class HostUtils(object):
                                               "FROM win32_logicaldisk "
                                               "WHERE DeviceID='%s'"
                                               % drive)[0]
-        return (long(logical_disk.Size), long(logical_disk.FreeSpace))
+        return (int(logical_disk.Size), int(logical_disk.FreeSpace))
 
     def check_min_windows_version(self, major, minor, build=0):
         version_str = self.get_windows_version()
-        return map(int, version_str.split('.')) >= [major, minor, build]
+        return list(map(int, version_str.split('.'))) >= [major, minor, build]
 
     def get_windows_version(self):
-        return self._conn_cimv2.Win32_OperatingSystem()[0].Version
+        if not HostUtils._windows_version:
+            Win32_OperatingSystem = self._conn_cimv2.Win32_OperatingSystem()[0]
+            HostUtils._windows_version = Win32_OperatingSystem.Version
+        return HostUtils._windows_version
 
     def get_local_ips(self):
         addr_info = socket.getaddrinfo(socket.gethostname(), None, 0, 0, 0)
@@ -136,3 +148,66 @@ class HostUtils(object):
 
     def get_default_vm_generation(self):
         return self._DEFAULT_VM_GENERATION
+
+    def check_server_feature(self, feature_id):
+        return len(self._conn_cimv2.Win32_ServerFeature(ID=feature_id)) > 0
+
+    def get_numa_nodes(self):
+        numa_nodes = self._conn_virt.Msvm_NumaNode()
+        nodes_info = []
+        for node in numa_nodes:
+            memory_info = self._get_numa_memory_info(node)
+            if not memory_info:
+                LOG.warning(_LW("Could not find memory information for NUMA "
+                                "node. Skipping node measurements."))
+                continue
+            # Due to a bug in vmms, getting Msvm_Processor for the numa
+            # node associators resulted in a vmms crash.
+            # As an alternative to using associators we have to manually get
+            # the related Msvm_Processor classes.
+            # Msvm_HostedDependency is the association class between
+            # Msvm_NumaNode and Msvm_Processor. We need to use this class to
+            # relate the two because using associators on Msvm_Processor
+            # will also result in a crash.
+            processors = self._conn_virt.Msvm_Processor(['DeviceID'])
+            numa_assoc = self._conn_virt.Msvm_HostedDependency(
+                Antecedent=node.path_())
+            numa_node_proc_paths = [item.Dependent for item in numa_assoc]
+            cpu_info = self._get_numa_cpu_info(numa_node_proc_paths,
+                                               processors)
+            if not cpu_info:
+                LOG.warning(_LW("Could not find CPU information for NUMA "
+                                "node. Skipping node measurements."))
+                continue
+
+            node_info = {
+                # NodeID has the format: Microsoft:PhysicalNode\<NODE_ID>
+                'id': node.NodeID.split('\\')[-1],
+
+                # memory block size is 1MB.
+                'memory': memory_info.NumberOfBlocks,
+                'memory_usage': node.CurrentlyConsumableMemoryBlocks,
+
+                # DeviceID has the format: Microsoft:UUID\0\<DEV_ID>
+                'cpuset': set([c.DeviceID.split('\\')[-1] for c in cpu_info]),
+                # cpu_usage can be set, each CPU has a "LoadPercentage"
+                'cpu_usage': 0,
+            }
+
+            nodes_info.append(node_info)
+
+        return nodes_info
+
+    def _get_numa_memory_info(self, node):
+        memory_info = node.associators(wmi_result_class=self._MSVM_MEMORY)
+        if memory_info:
+            return memory_info[0]
+
+    def _get_numa_cpu_info(self, numa_node_proc_paths, processors):
+        cpu_info = []
+        paths = [x.upper() for x in numa_node_proc_paths]
+        for proc in processors:
+            if proc.path_().upper() in paths:
+                cpu_info.append(proc)
+
+        return cpu_info

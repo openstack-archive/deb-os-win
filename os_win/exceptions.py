@@ -75,21 +75,26 @@ class VHDWin32APIException(VHDException, Win32Exception):
     pass
 
 
-class WMIException(OSWinException):
-    msg_fmt = '%(message)s WMI exception message: %(wmi_exc_message)s'
+class FCException(OSWinException):
+    pass
 
-    def __init__(self, message=None, wmi_exc=None, **kwargs):
-        wmi_exc_message = None
+
+class FCWin32Exception(FCException, Win32Exception):
+    pass
+
+
+class WMIException(OSWinException):
+    def __init__(self, message=None, wmi_exc=None):
         if wmi_exc:
             try:
                 wmi_exc_message = wmi_exc.com_error.excepinfo[2].strip()
+                message = "%s WMI exception message: %s" % (message,
+                                                            wmi_exc_message)
             except AttributeError:
                 pass
             except IndexError:
                 pass
-        super(WMIException, self).__init__(message,
-                                           wmi_exc_message=wmi_exc_message,
-                                           **kwargs)
+        super(WMIException, self).__init__(message)
 
 
 class ISCSITargetException(OSWinException):
