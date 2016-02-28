@@ -40,8 +40,8 @@ Build-Depends-Indep: python-babel (>= 1.3),
                      subunit,
                      testrepository,
 Standards-Version: 3.9.6
-Vcs-Browser: http://anonscm.debian.org/gitweb/?p=openstack/python-os-win.git
-Vcs-Git: git://anonscm.debian.org/openstack/python-os-win.git
+Vcs-Browser: https://anonscm.debian.org/cgit/openstack/python-os-win.git/
+Vcs-Git: https://anonscm.debian.org/git/openstack/python-os-win.git
 Homepage: https://github.com/openstack/os-win
 
 Package: python-os-win
