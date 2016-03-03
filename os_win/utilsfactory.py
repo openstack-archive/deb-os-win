@@ -37,6 +37,11 @@ LOG = logging.getLogger(__name__)
 utils = hostutils.HostUtils()
 
 utils_map = {
+    'diskutils': {
+        'DiskUtils': {
+            'min_version': 6.2,
+            'max_version': None,
+            'path': 'os_win.utils.storage.diskutils.DiskUtils'}},
     'hostutils': {
         'HostUtils': {
             'min_version': 6.2,
@@ -48,11 +53,11 @@ utils_map = {
             'max_version': 6.2,
             'path': 'os_win.utils.storage.initiator.iscsi_cli_utils.'
                     'ISCSIInitiatorCLIUtils'},
-        'ISCSIInitiatorWMIUtils': {
+        'ISCSIInitiatorUtils': {
             'min_version': 6.2,
             'max_version': None,
-            'path': 'os_win.utils.storage.initiator.iscsi_wmi_utils.'
-                    'ISCSIInitiatorWMIUtils'}},
+            'path': 'os_win.utils.storage.initiator.iscsi_utils.'
+                    'ISCSIInitiatorUtils'}},
     'iscsi_target_utils': {
         'ISCSITargetUtils': {
             'min_version': 6.2,
@@ -71,11 +76,21 @@ utils_map = {
             'max_version': None,
             'path': 'os_win.utils.compute.livemigrationutils.'
                     'LiveMigrationUtils'}},
+    'metricsutils': {
+        'MetricsUtils': {
+            'min_version': 6.2,
+            'max_version': None,
+            'path': 'os_win.utils.metrics.metricsutils.MetricsUtils'}},
     'networkutils': {
         'NetworkUtils': {
             'min_version': 6.2,
             'max_version': None,
             'path': 'os_win.utils.network.networkutils.NetworkUtils'}},
+    'nvgreutils': {
+        'NvgreUtils': {
+            'min_version': 6.2,
+            'max_version': None,
+            'path': 'os_win.utils.network.nvgreutils.NvgreUtils'}},
     'pathutils': {
         'PathUtils': {
             'min_version': 6.2,
@@ -138,8 +153,16 @@ def get_vhdutils():
     return _get_class(class_type='vhdutils')
 
 
+def get_metricsutils():
+    return _get_class(class_type='metricsutils')
+
+
 def get_networkutils():
     return _get_class(class_type='networkutils')
+
+
+def get_nvgreutils():
+    return _get_class(class_type='nvgreutils')
 
 
 def get_hostutils():
@@ -179,3 +202,7 @@ def get_named_pipe_handler(*args, **kwargs):
 
 def get_fc_utils():
     return _get_class(class_type='fc_utils')
+
+
+def get_diskutils():
+    return _get_class(class_type='diskutils')

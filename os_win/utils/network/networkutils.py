@@ -18,6 +18,7 @@ Utility class for network related operations.
 Based on the "root/virtualization/v2" namespace available starting with
 Hyper-V Server / Windows Server 2012.
 """
+import re
 
 from eventlet import greenthread
 import sys
@@ -32,6 +33,10 @@ from os_win.utils import jobutils
 
 class NetworkUtils(object):
 
+    EVENT_TYPE_CREATE = "__InstanceCreationEvent"
+    EVENT_TYPE_DELETE = "__InstanceDeletionEvent"
+
+    _VNIC_SET_DATA = 'Msvm_SyntheticEthernetPortSettingData'
     _EXTERNAL_PORT = 'Msvm_ExternalEthernetPort'
     _ETHERNET_SWITCH_PORT = 'Msvm_EthernetSwitchPort'
     _PORT_ALLOC_SET_DATA = 'Msvm_EthernetPortAllocationSettingData'
@@ -57,10 +62,6 @@ class NetworkUtils(object):
     _ACL_ACTION_DENY = 2
     _ACL_ACTION_METER = 3
 
-    _METRIC_ENABLED = 2
-    _NET_IN_METRIC_NAME = 'Filtered Incoming Network Traffic'
-    _NET_OUT_METRIC_NAME = 'Filtered Outgoing Network Traffic'
-
     _ACL_APPLICABILITY_LOCAL = 1
     _ACL_APPLICABILITY_REMOTE = 2
 
@@ -76,45 +77,86 @@ class NetworkUtils(object):
     # 2 directions x 2 address types = 4 ACLs
     _REJECT_ACLS_COUNT = 4
 
+    _VNIC_LISTENER_TIMEOUT_MS = 2000
+
     def __init__(self):
         self._jobutils = jobutils.JobUtils()
+        self._switches = {}
+        self._switch_ports = {}
+        self._vlan_sds = {}
+        self._vsid_sds = {}
+        self._sg_acl_sds = {}
         if sys.platform == 'win32':
             self._conn = wmi.WMI(moniker='//./root/virtualization/v2')
 
-    def get_external_vswitch(self, vswitch_name):
-        if vswitch_name:
-            vswitches = self._conn.Msvm_VirtualEthernetSwitch(
-                ElementName=vswitch_name)
-            if not len(vswitches):
-                raise exceptions.HyperVException(_('vswitch "%s" not found')
-                                                 % vswitch_name)
-        else:
-            # Find the vswitch that is connected to the first physical nic.
-            ext_port = self._conn.Msvm_ExternalEthernetPort(IsBound='TRUE')[0]
-            lep = ext_port.associators(wmi_result_class='Msvm_LANEndpoint')[0]
-            lep1 = lep.associators(wmi_result_class='Msvm_LANEndpoint')[0]
-            esw = lep1.associators(
-                wmi_result_class='Msvm_EthernetSwitchPort')[0]
-            vswitches = esw.associators(
-                wmi_result_class='Msvm_VirtualEthernetSwitch')
+    def init_caches(self):
+        for vswitch in self._conn.Msvm_VirtualEthernetSwitch():
+            self._switches[vswitch.ElementName] = vswitch
 
-            if not len(vswitches):
-                raise exceptions.HyperVException(
-                    _('No external vswitch found'))
+        # map between switch port ID and switch port WMI object.
+        for port in self._conn.Msvm_EthernetPortAllocationSettingData():
+            self._switch_ports[port.ElementName] = port
 
-        return vswitches[0].path_()
+        # VLAN and VSID setting data's InstanceID will contain the switch
+        # port's InstanceID.
+        switch_port_id_regex = re.compile(
+            "Microsoft:[0-9A-F-]*\\\\[0-9A-F-]*\\\\[0-9A-F-]",
+            flags=re.IGNORECASE)
+
+        # map between switch port's InstanceID and their VLAN setting data WMI
+        # objects.
+        for vlan_sd in self._conn.Msvm_EthernetSwitchPortVlanSettingData():
+            match = switch_port_id_regex.match(vlan_sd.InstanceID)
+            if match:
+                self._vlan_sds[match.group()] = vlan_sd
+
+        # map between switch port's InstanceID and their VSID setting data WMI
+        # objects.
+        for vsid_sd in self._conn.Msvm_EthernetSwitchPortSecuritySettingData():
+            match = switch_port_id_regex.match(vsid_sd.InstanceID)
+            if match:
+                self._vsid_sds[match.group()] = vsid_sd
+
+    def update_cache(self):
+        # map between switch port ID and switch port WMI object.
+        self._switch_ports = {
+            port.ElementName: port for port in
+            self._conn.Msvm_EthernetPortAllocationSettingData()}
 
     def get_vswitch_id(self, vswitch_name):
         vswitch = self._get_vswitch(vswitch_name)
         return vswitch.Name
 
+    def get_vswitch_external_network_name(self, vswitch_name):
+        ext_port = self._get_vswitch_external_port(vswitch_name)
+        if ext_port:
+            return ext_port.ElementName
+
     def _get_vswitch(self, vswitch_name):
+        if vswitch_name in self._switches:
+            return self._switches[vswitch_name]
+
         vswitch = self._conn.Msvm_VirtualEthernetSwitch(
             ElementName=vswitch_name)
         if not len(vswitch):
             raise exceptions.HyperVException(_('VSwitch not found: %s') %
                                              vswitch_name)
+
+        self._switches[vswitch_name] = vswitch[0]
         return vswitch[0]
+
+    def _get_vswitch_external_port(self, vswitch_name):
+        vswitch = self._get_vswitch(vswitch_name)
+        ext_ports = self._conn.Msvm_ExternalEthernetPort()
+        for ext_port in ext_ports:
+            lan_endpoint_list = ext_port.associators(
+                wmi_result_class=self._LAN_ENDPOINT)
+            if lan_endpoint_list:
+                lan_endpoint_list = lan_endpoint_list[0].associators(
+                    wmi_result_class=self._LAN_ENDPOINT)
+                if (lan_endpoint_list and
+                        lan_endpoint_list[0].SystemName == vswitch.Name):
+                    return ext_port
 
     def vswitch_port_needed(self):
         return False
@@ -146,6 +188,10 @@ class NetworkUtils(object):
             for p in self._conn.Msvm_SyntheticEthernetPortSettingData()
             if p.ElementName is not None)
 
+    def get_vnic_mac_address(self, switch_port_name):
+        vnic = self._get_vnic_settings(switch_port_name)
+        return vnic.Address
+
     def _get_vnic_settings(self, vnic_name):
         vnic_settings = self._conn.Msvm_SyntheticEthernetPortSettingData(
             ElementName=vnic_name)
@@ -153,6 +199,49 @@ class NetworkUtils(object):
             raise exceptions.HyperVException(
                 message=_('Vnic not found: %s') % vnic_name)
         return vnic_settings[0]
+
+    def get_vnic_event_listener(self, event_type):
+        query = self._get_event_wql_query(cls=self._VNIC_SET_DATA,
+                                          event_type=event_type,
+                                          timeframe=2)
+        listener = self._conn.Msvm_SyntheticEthernetPortSettingData.watch_for(
+            query)
+
+        def _poll_events(callback):
+            while True:
+                # Retrieve one by one all the events that occurred in
+                # the checked interval.
+                try:
+                    event = listener(self._VNIC_LISTENER_TIMEOUT_MS)
+                    callback(event.ElementName)
+                except wmi.x_wmi_timed_out:
+                    # no new event published.
+                    pass
+
+        return _poll_events
+
+    def _get_event_wql_query(self, cls, event_type, timeframe=2, **where):
+        """Return a WQL query used for polling WMI events.
+
+            :param cls: the Hyper-V class polled for events.
+            :param event_type: the type of event expected.
+            :param timeframe: check for events that occurred in
+                              the specified timeframe.
+            :param where: key-value arguments which are to be included in the
+                          query. For example: like=dict(foo="bar").
+        """
+        like = where.pop('like', {})
+        like_str = " AND ".join("TargetInstance.%s LIKE '%s%%'" % (k, v)
+                                for k, v in like.items())
+        like_str = "AND " + like_str if like_str else ""
+
+        query = ("SELECT * FROM %(event_type)s WITHIN %(timeframe)s "
+                 "WHERE TargetInstance ISA '%(class)s' %(like)s" % {
+                     'class': cls,
+                     'event_type': event_type,
+                     'like': like_str,
+                     'timeframe': timeframe})
+        return query
 
     def connect_vnic_to_vswitch(self, vswitch_name, switch_port_name):
         port, found = self._get_switch_port_allocation(switch_port_name, True)
@@ -178,19 +267,23 @@ class NetworkUtils(object):
             wmi_result_class='Msvm_ComputerSystem')
         return vm[0]
 
-    def disconnect_switch_port(self, switch_port_name, vnic_deleted,
-                               delete_port):
-        """Disconnects the switch port."""
+    def remove_switch_port(self, switch_port_name, vnic_deleted=False):
+        """Removes the switch port."""
         sw_port, found = self._get_switch_port_allocation(switch_port_name)
         if not sw_port:
             # Port not found. It happens when the VM was already deleted.
             return
 
-        if delete_port:
-            self._jobutils.remove_virt_resource(sw_port)
-        else:
-            sw_port.EnabledState = self._STATE_DISABLED
-            self._jobutils.modify_virt_resource(sw_port)
+        if not vnic_deleted:
+            try:
+                self._jobutils.remove_virt_resource(sw_port)
+            except wmi.x_wmi:
+                # port may have already been destroyed by Hyper-V
+                pass
+
+        self._switch_ports.pop(switch_port_name, None)
+        self._vlan_sds.pop(sw_port.InstanceID, None)
+        self._vsid_sds.pop(sw_port.InstanceID, None)
 
     def set_vswitch_port_vlan_id(self, vlan_id, switch_port_name):
         port_alloc, found = self._get_switch_port_allocation(switch_port_name)
@@ -209,24 +302,72 @@ class NetworkUtils(object):
             # due to a wmi exception.
             self._jobutils.remove_virt_feature(vlan_settings)
 
-        (vlan_settings, found) = self._get_vlan_setting_data(switch_port_name)
+            # remove from cache.
+            self._vlan_sds.pop(port_alloc.InstanceID, None)
+
+        vlan_settings = self._create_default_setting_data(
+            self._PORT_VLAN_SET_DATA)
         vlan_settings.AccessVlanId = vlan_id
         vlan_settings.OperationMode = self._OPERATION_MODE_ACCESS
         self._jobutils.add_virt_feature(vlan_settings, port_alloc)
 
-    def _get_vlan_setting_data_from_port_alloc(self, port_alloc):
-        return self._get_first_item(port_alloc.associators(
-            wmi_result_class=self._PORT_VLAN_SET_DATA))
+    def set_vswitch_port_vsid(self, vsid, switch_port_name):
+        port_alloc, found = self._get_switch_port_allocation(switch_port_name)
+        if not found:
+            raise exceptions.HyperVPortNotFoundException(
+                port_name=switch_port_name)
 
-    def _get_vlan_setting_data(self, switch_port_name, create=True):
-        return self._get_setting_data(
-            self._PORT_VLAN_SET_DATA,
-            switch_port_name, create)
+        vsid_settings = self._get_security_setting_data_from_port_alloc(
+            port_alloc)
+
+        if vsid_settings:
+            if vsid_settings.VirtualSubnetId == vsid:
+                # VSID already added, no need to readd it.
+                return
+            # Removing the feature because it cannot be modified
+            # due to a wmi exception.
+            self._jobutils.remove_virt_feature(vsid_settings)
+
+            # remove from cache.
+            self._vsid_sds.pop(port_alloc.InstanceID, None)
+
+        vsid_settings = self._create_default_setting_data(
+            self._PORT_SECURITY_SET_DATA)
+        vsid_settings.VirtualSubnetId = vsid
+        self._jobutils.add_virt_feature(vsid_settings, port_alloc)
+
+    def _get_vlan_setting_data_from_port_alloc(self, port_alloc):
+        return self._get_setting_data_from_port_alloc(
+            port_alloc, self._vlan_sds, self._PORT_VLAN_SET_DATA)
+
+    def _get_security_setting_data_from_port_alloc(self, port_alloc):
+        return self._get_setting_data_from_port_alloc(
+            port_alloc, self._vsid_sds, self._PORT_SECURITY_SET_DATA)
+
+    def _get_setting_data_from_port_alloc(self, port_alloc, cache, data_class):
+        if port_alloc.InstanceID in cache:
+            return cache[port_alloc.InstanceID]
+
+        setting_data = self._get_first_item(port_alloc.associators(
+            wmi_result_class=data_class))
+        if setting_data:
+            cache[port_alloc.InstanceID] = setting_data
+        return setting_data
 
     def _get_switch_port_allocation(self, switch_port_name, create=False):
-        return self._get_setting_data(
+        if switch_port_name in self._switch_ports:
+            return self._switch_ports[switch_port_name], True
+
+        switch_port, found = self._get_setting_data(
             self._PORT_ALLOC_SET_DATA,
             switch_port_name, create)
+
+        if found:
+            # newly created setting data cannot be cached, they do not
+            # represent real objects yet.
+            # if it was found, it means that it was not created.
+            self._switch_ports[switch_port_name] = switch_port
+        return switch_port, found
 
     def _get_setting_data(self, class_name, element_name, create=True):
         element_name = element_name.replace("'", '"')
@@ -244,6 +385,9 @@ class NetworkUtils(object):
     def _get_default_setting_data(self, class_name):
         return self._conn.query("SELECT * FROM %s WHERE InstanceID "
                                 "LIKE '%%\\Default'" % class_name)[0]
+
+    def _create_default_setting_data(self, class_name):
+        return getattr(self._conn, class_name).new()
 
     def _get_first_item(self, obj):
         if obj:
@@ -265,22 +409,6 @@ class NetworkUtils(object):
                     acl = self._create_acl(
                         acl_dir, acl_type, self._ACL_ACTION_METER)
                     self._jobutils.add_virt_feature(acl, port)
-
-    def enable_control_metrics(self, switch_port_name):
-        port, found = self._get_switch_port_allocation(switch_port_name, False)
-        if not found:
-            return
-
-        metric_svc = self._conn.Msvm_MetricService()[0]
-        metric_names = [self._NET_IN_METRIC_NAME, self._NET_OUT_METRIC_NAME]
-
-        for metric_name in metric_names:
-            metric_def = self._conn.CIM_BaseMetricDefinition(Name=metric_name)
-            if metric_def:
-                metric_svc.ControlMetrics(
-                    Subject=port.path_(),
-                    Definition=metric_def[0].path_(),
-                    MetricCollectionEnabled=self._METRIC_ENABLED)
 
     def can_enable_control_metrics(self, switch_port_name):
         port, found = self._get_switch_port_allocation(switch_port_name, False)
@@ -333,6 +461,10 @@ class NetworkUtils(object):
         if remove_acls:
             self._jobutils.remove_multiple_virt_features(remove_acls)
 
+            # remove the old ACLs from the cache.
+            new_acls = [a for a in acls if a not in remove_acls]
+            self._sg_acl_sds[port.ElementName] = new_acls
+
     def remove_all_security_rules(self, switch_port_name):
         port, found = self._get_switch_port_allocation(switch_port_name, False)
         if not found:
@@ -346,11 +478,15 @@ class NetworkUtils(object):
         if filtered_acls:
             self._jobutils.remove_multiple_virt_features(filtered_acls)
 
+            # clear the cache.
+            self._sg_acl_sds[port.ElementName] = []
+
     def _bind_security_rules(self, port, sg_rules):
-        acls = port.associators(wmi_result_class=self._PORT_EXT_ACL_SET_DATA)
+        acls = self._get_port_security_acls(port)
 
         # Add the ACL only if it don't already exist.
         add_acls = []
+        processed_sg_rules = []
         weights = self._get_new_weights(sg_rules, acls)
         index = 0
 
@@ -366,7 +502,7 @@ class NetworkUtils(object):
 
             # append sg_rule the acls list, to make sure that the same rule
             # is not processed twice.
-            acls.append(sg_rule)
+            processed_sg_rules.append(sg_rule)
 
             # yielding to other threads that must run (like state reporting)
             greenthread.sleep()
@@ -374,8 +510,28 @@ class NetworkUtils(object):
         if add_acls:
             self._jobutils.add_multiple_virt_features(add_acls, port)
 
+            # caching the Security Group Rules that have been processed and
+            # added to the port. The list should only be used to check the
+            # existence of rules, nothing else.
+            acls.extend(processed_sg_rules)
+
+    def _get_port_security_acls(self, port):
+        """Returns a mutable list of Security Group Rule objects.
+
+        Returns the list of Security Group Rule objects from the cache,
+        otherwise it fetches and caches from the port's associators.
+        """
+
+        if port.ElementName in self._sg_acl_sds:
+            return self._sg_acl_sds[port.ElementName]
+
+        acls = port.associators(wmi_result_class=self._PORT_EXT_ACL_SET_DATA)
+        self._sg_acl_sds[port.ElementName] = acls
+
+        return acls
+
     def _create_acl(self, direction, acl_type, action):
-        acl = self._get_default_setting_data(self._PORT_ALLOC_ACL_SET_DATA)
+        acl = self._create_default_setting_data(self._PORT_ALLOC_ACL_SET_DATA)
         acl.set(Direction=direction,
                 AclType=acl_type,
                 Action=action,
@@ -383,7 +539,9 @@ class NetworkUtils(object):
         return acl
 
     def _create_security_acl(self, sg_rule, weight):
-        acl = self._get_default_setting_data(self._PORT_EXT_ACL_SET_DATA)
+        # Acl instance can be created new eachtime, the object should be
+        # of type ExtendedEthernetSettingsData.
+        acl = self._create_default_setting_data(self._PORT_EXT_ACL_SET_DATA)
         acl.set(**sg_rule.to_dict())
         return acl
 
@@ -419,6 +577,7 @@ class NetworkUtilsR2(NetworkUtils):
         acl = super(NetworkUtilsR2, self)._create_security_acl(sg_rule,
                                                                weight)
         acl.Weight = weight
+        sg_rule.Weight = weight
         return acl
 
     def _get_new_weights(self, sg_rules, existent_acls):

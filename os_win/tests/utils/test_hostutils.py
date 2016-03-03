@@ -26,6 +26,7 @@ class FakeCPUSpec(object):
     Architecture = mock.sentinel.cpu_arch
     Name = mock.sentinel.cpu_name
     Manufacturer = mock.sentinel.cpu_man
+    MaxClockSpeed = mock.sentinel.max_clock_speed
     NumberOfCores = mock.sentinel.cpu_cores
     NumberOfLogicalProcessors = mock.sentinel.cpu_procs
 
@@ -217,7 +218,6 @@ class HostUtilsTestCase(base.BaseTestCase):
         host_cpu = mock.MagicMock(DeviceID=self._DEVICE_ID)
         mock_get_cpu_info.return_value = [host_cpu]
         numa_node = mock.MagicMock(NodeID=self._NODE_ID)
-        numa_node.associators.return_value = [numa_memory, host_cpu]
         self._hostutils._conn_virt.Msvm_NumaNode.return_value = [
             numa_node, numa_node]
 
@@ -234,17 +234,19 @@ class HostUtilsTestCase(base.BaseTestCase):
         self.assertEqual([expected_info, expected_info], nodes_info)
 
     def test_get_numa_memory_info(self):
-        numa_memory = mock.MagicMock()
-        numa_node = mock.MagicMock()
-        numa_node.associators.return_value = [numa_memory]
-        memory_info = self._hostutils._get_numa_memory_info(numa_node)
+        system_memory = mock.MagicMock()
+        system_memory.path_.return_value = 'fake_wmi_obj_path'
+        numa_node_memory = mock.MagicMock()
+        numa_node_memory.path_.return_value = 'fake_wmi_obj_path1'
+        numa_node_assoc_paths = ['fake_wmi_obj_path']
+        memory_info = self._hostutils._get_numa_memory_info(
+            numa_node_assoc_paths, [system_memory, numa_node_memory])
 
-        self.assertEqual(numa_memory, memory_info)
+        self.assertEqual(system_memory, memory_info)
 
     def test_get_numa_memory_info_not_found(self):
-        numa_node = mock.MagicMock()
-        numa_node.associators.return_value = []
-        memory_info = self._hostutils._get_numa_memory_info(numa_node)
+        other = mock.MagicMock()
+        memory_info = self._hostutils._get_numa_memory_info([], [other])
 
         self.assertIsNone(memory_info)
 
@@ -252,9 +254,9 @@ class HostUtilsTestCase(base.BaseTestCase):
         host_cpu = mock.MagicMock()
         host_cpu.path_.return_value = 'fake_wmi_obj_path'
         vm_cpu = mock.MagicMock()
-        vm_cpu.path_return_value = 'fake_wmi_obj_path1'
-        numa_node_proc_path = ['fake_wmi_obj_path']
-        cpu_info = self._hostutils._get_numa_cpu_info(numa_node_proc_path,
+        vm_cpu.path_.return_value = 'fake_wmi_obj_path1'
+        numa_node_assoc_paths = ['fake_wmi_obj_path']
+        cpu_info = self._hostutils._get_numa_cpu_info(numa_node_assoc_paths,
                                                       [host_cpu, vm_cpu])
 
         self.assertEqual([host_cpu], cpu_info)
@@ -264,3 +266,46 @@ class HostUtilsTestCase(base.BaseTestCase):
         cpu_info = self._hostutils._get_numa_cpu_info([], [other])
 
         self.assertEqual([], cpu_info)
+
+    def test_get_remotefx_gpu_info(self):
+        fake_gpu = mock.MagicMock()
+        fake_gpu.Name = mock.sentinel.Fake_gpu_name
+        fake_gpu.TotalVideoMemory = mock.sentinel.Fake_gpu_total_memory
+        fake_gpu.AvailableVideoMemory = mock.sentinel.Fake_gpu_available_memory
+        fake_gpu.DirectXVersion = mock.sentinel.Fake_gpu_directx
+        fake_gpu.DriverVersion = mock.sentinel.Fake_gpu_driver_version
+
+        mock_phys_3d_proc = (
+            self._hostutils._conn_virt.Msvm_Physical3dGraphicsProcessor)
+        mock_phys_3d_proc.return_value = [fake_gpu]
+
+        return_gpus = self._hostutils.get_remotefx_gpu_info()
+        self.assertEqual(mock.sentinel.Fake_gpu_name, return_gpus[0]['name'])
+        self.assertEqual(mock.sentinel.Fake_gpu_driver_version,
+            return_gpus[0]['driver_version'])
+        self.assertEqual(mock.sentinel.Fake_gpu_total_memory,
+            return_gpus[0]['total_video_ram'])
+        self.assertEqual(mock.sentinel.Fake_gpu_available_memory,
+            return_gpus[0]['available_video_ram'])
+        self.assertEqual(mock.sentinel.Fake_gpu_directx,
+            return_gpus[0]['directx_version'])
+
+    def _set_verify_host_remotefx_capability_mocks(self, isGpuCapable=True,
+                                                   isSlatCapable=True):
+        s3d_video_pool = self._hostutils._conn_virt.Msvm_Synth3dVideoPool()[0]
+        s3d_video_pool.IsGpuCapable = isGpuCapable
+        s3d_video_pool.IsSlatCapable = isSlatCapable
+
+    def test_verify_host_remotefx_capability_unsupported_gpu(self):
+        self._set_verify_host_remotefx_capability_mocks(isGpuCapable=False)
+        self.assertRaises(exceptions.HyperVRemoteFXException,
+                          self._hostutils.verify_host_remotefx_capability)
+
+    def test_verify_host_remotefx_capability_no_slat(self):
+        self._set_verify_host_remotefx_capability_mocks(isSlatCapable=False)
+        self.assertRaises(exceptions.HyperVRemoteFXException,
+                          self._hostutils.verify_host_remotefx_capability)
+
+    def test_verify_host_remotefx_capability(self):
+        self._set_verify_host_remotefx_capability_mocks()
+        self._hostutils.verify_host_remotefx_capability()

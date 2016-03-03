@@ -196,9 +196,11 @@ class VHDUtils(object):
         vhd_info = {}
         info_members = info_members or self._vhd_info_members
 
+        open_access_mask = (vdisk_const.VIRTUAL_DISK_ACCESS_GET_INFO |
+                            vdisk_const.VIRTUAL_DISK_ACCESS_DETACH)
         handle = self._open(
             vhd_path,
-            open_access_mask=vdisk_const.VIRTUAL_DISK_ACCESS_GET_INFO)
+            open_access_mask=open_access_mask)
 
         try:
             for member in info_members:
