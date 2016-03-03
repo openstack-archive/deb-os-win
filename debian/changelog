@@ -1,4 +1,4 @@
-python-os-win (0.2.2-1) UNRELEASED; urgency=medium
+python-os-win (0.2.2-1) experimental; urgency=medium
 
   [ Ondřej Nový ]
   * Fixed VCS URLs (https).
@@ -7,7 +7,10 @@ python-os-win (0.2.2-1) UNRELEASED; urgency=medium
   * New upstream release.
   * d/control: Align (Build-)Depends with upstream.
 
- -- Corey Bryant <corey.bryant@canonical.com>  Thu, 03 Mar 2016 10:56:21 -0500
+  [ Thomas Goirand ]
+  * Standards-Version: 3.9.7 (no change).
+
+ -- Thomas Goirand <zigo@debian.org>  Thu, 03 Mar 2016 16:15:22 +0000
 
 python-os-win (0.1.1-1) experimental; urgency=medium
 
