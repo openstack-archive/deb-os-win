@@ -33,18 +33,19 @@ import six
 from six.moves import range  # noqa
 
 from os_win._i18n import _, _LW
+from os_win import _utils
 from os_win import constants
 from os_win import exceptions
 from os_win.utils import _wqlutils
+from os_win.utils import baseutils
 from os_win.utils import jobutils
-from os_win.utils.metrics import metricsutils
 from os_win.utils import pathutils
 
 CONF = cfg.CONF
 LOG = logging.getLogger(__name__)
 
 
-class VMUtils(object):
+class VMUtils(baseutils.BaseUtilsVirt):
 
     # These constants can be overridden by inherited classes
     _PHYS_DISK_RES_SUB_TYPE = 'Microsoft:Hyper-V:Physical Disk Drive'
@@ -117,25 +118,15 @@ class VMUtils(object):
                             constants.HYPERV_VM_STATE_PAUSED: 9,
                             constants.HYPERV_VM_STATE_SUSPENDED: 6}
 
+    _DEFAULT_EVENT_CHECK_TIMEFRAME = 60  # seconds
+    _DEFAULT_EVENT_TIMEOUT_MS = 2000
+
     def __init__(self, host='.'):
-        self._vs_man_svc_attr = None
+        super(VMUtils, self).__init__()
         self._jobutils = jobutils.JobUtils()
-        self._metricsutils = metricsutils.MetricsUtils()
         self._pathutils = pathutils.PathUtils()
         self._enabled_states_map = {v: k for k, v in
                                     six.iteritems(self._vm_power_states_map)}
-        if sys.platform == 'win32':
-            self._init_hyperv_wmi_conn(host)
-
-    def _init_hyperv_wmi_conn(self, host):
-        self._conn = wmi.WMI(moniker='//%s/root/virtualization/v2' % host)
-
-    @property
-    def _vs_man_svc(self):
-        if not self._vs_man_svc_attr:
-            self._vs_man_svc_attr = (
-                self._conn.Msvm_VirtualSystemManagementService()[0])
-        return self._vs_man_svc_attr
 
     def list_instance_notes(self):
         instance_notes = []
@@ -350,6 +341,7 @@ class VMUtils(object):
             SystemSettings=vs_data.GetText_(1))
         self._jobutils.check_ret_val(ret_val, job_path)
 
+    @_utils.retry_decorator(exceptions=exceptions.HyperVException)
     def _modify_virtual_system(self, vmsetting):
         (job_path, ret_val) = self._vs_man_svc.ModifySystemSettings(
             SystemSettings=vmsetting.GetText_(1))
@@ -490,7 +482,7 @@ class VMUtils(object):
 
         if serial:
             # Apparently this can't be set when the resource is added.
-            diskdrive = wmi.WMI(moniker=diskdrive_path)
+            diskdrive = self._get_wmi_obj(diskdrive_path)
             diskdrive.ElementName = serial
             self._jobutils.modify_virt_resource(diskdrive)
 
@@ -507,7 +499,7 @@ class VMUtils(object):
         return disk_resource.AddressOnParent
 
     def set_disk_host_res(self, disk_res_path, mounted_disk_path):
-        diskdrive = wmi.WMI(moniker=disk_res_path)
+        diskdrive = self._get_wmi_obj(disk_res_path)
         diskdrive.HostResource = [mounted_disk_path]
         self._jobutils.modify_virt_resource(diskdrive)
 
@@ -647,9 +639,6 @@ class VMUtils(object):
         (job_path, ret_val) = self._vs_man_svc.DestroySystem(vm.path_())
         self._jobutils.check_ret_val(ret_val, job_path)
 
-    def _get_wmi_obj(self, path):
-        return wmi.WMI(moniker=path.replace('\\', '/'))
-
     def take_vm_snapshot(self, vm_name):
         vm = self._lookup_vm_check(vm_name, as_vssd=False)
         vs_snap_svc = self._conn.Msvm_VirtualSystemSnapshotService()[0]
@@ -668,12 +657,6 @@ class VMUtils(object):
         vs_snap_svc = self._conn.Msvm_VirtualSystemSnapshotService()[0]
         (job_path, ret_val) = vs_snap_svc.DestroySnapshot(snapshot_path)
         self._jobutils.check_ret_val(ret_val, job_path)
-
-    def enable_vm_metrics_collection(self, vm_name):
-        # TODO(claudiub): nova still calls this method, causing VMs to fail to
-        # spawn if metrics collection is enabled. Remove this when the nova
-        # compute HyperVDriver properly calls the metricsutils method instead.
-        self._metricsutils.enable_vm_metrics_collection(vm_name)
 
     def get_vm_dvd_disk_paths(self, vm_name):
         vmsettings = self._lookup_vm_check(vm_name)
@@ -816,14 +799,34 @@ class VMUtils(object):
 
         return active_vm_names
 
-    def get_vm_power_state_change_listener(self, timeframe, filtered_states):
+    def get_vm_power_state_change_listener(
+            self, timeframe=_DEFAULT_EVENT_CHECK_TIMEFRAME,
+            event_timeout=_DEFAULT_EVENT_TIMEOUT_MS,
+            filtered_states=None, get_handler=False):
         field = self._VM_ENABLED_STATE_PROP
         query = self._get_event_wql_query(cls=self._COMPUTER_SYSTEM_CLASS,
                                           field=field,
                                           timeframe=timeframe,
                                           filtered_states=filtered_states)
-        return self._conn.Msvm_ComputerSystem.watch_for(raw_wql=query,
-                                                        fields=[field])
+        listener = self._conn.Msvm_ComputerSystem.watch_for(raw_wql=query,
+                                                            fields=[field])
+
+        def _handle_events(callback):
+            while True:
+                try:
+                    # Retrieve one by one all the events that occurred in
+                    # the checked interval.
+                    event = listener(event_timeout)
+
+                    vm_name = event.ElementName
+                    vm_state = event.EnabledState
+                    vm_power_state = self.get_vm_power_state(vm_state)
+
+                    callback(vm_name, vm_power_state)
+                except wmi.x_wmi_timed_out:
+                    pass
+
+        return _handle_events if get_handler else listener
 
     def _get_event_wql_query(self, cls, field,
                              timeframe, filtered_states=None):

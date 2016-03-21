@@ -71,16 +71,7 @@ class VMUtilsTestCase(test_base.OsWinBaseTestCase):
         self._vmutils = vmutils.VMUtils()
         self._vmutils._conn = mock.MagicMock()
         self._vmutils._jobutils = mock.MagicMock()
-        self._vmutils._metricsutils = mock.MagicMock()
         self._vmutils._pathutils = mock.MagicMock()
-
-    def test_vs_man_svc(self):
-        expected = self._vmutils._conn.Msvm_VirtualSystemManagementService()[0]
-        self.assertEqual(expected, self._vmutils._vs_man_svc)
-
-    def test_vs_man_svc_cached(self):
-        self._vmutils._vs_man_svc_attr = mock.sentinel.fake_svc
-        self.assertEqual(mock.sentinel.fake_svc, self._vmutils._vs_man_svc)
 
     def test_get_vm_summary_info(self):
         self._lookup_vm()
@@ -453,14 +444,14 @@ class VMUtilsTestCase(test_base.OsWinBaseTestCase):
             mock_get_new_rsd.return_value, mock_vm)
 
     @mock.patch.object(vmutils.VMUtils, '_get_new_resource_setting_data')
-    @mock.patch.object(vmutils, 'wmi', create=True)
-    def _test_attach_volume_to_controller(self, mock_wmi, mock_get_new_rsd,
-                                          disk_serial=None):
+    @mock.patch.object(vmutils.VMUtils, '_get_wmi_obj')
+    def _test_attach_volume_to_controller(self, mock_get_wmi_obj,
+                                          mock_get_new_rsd, disk_serial=None):
         mock_vm = self._lookup_vm()
         mock_diskdrive = mock.MagicMock()
         jobutils = self._vmutils._jobutils
         jobutils.add_virt_resource.return_value = [mock_diskdrive]
-        mock_wmi.WMI.return_value = mock_diskdrive
+        mock_get_wmi_obj.return_value = mock_diskdrive
 
         self._vmutils.attach_volume_to_controller(
             self._FAKE_VM_NAME, self._FAKE_CTRL_PATH, self._FAKE_CTRL_ADDR,
@@ -542,9 +533,9 @@ class VMUtilsTestCase(test_base.OsWinBaseTestCase):
         result = self._vmutils.get_vm_physical_disk_mapping(self._FAKE_VM_NAME)
         self.assertEqual(expected_mapping, result)
 
-    @mock.patch.object(vmutils, 'wmi', create=True)
-    def test_set_disk_host_res(self, mock_wmi):
-        mock_diskdrive = mock_wmi.WMI.return_value
+    @mock.patch.object(vmutils.VMUtils, '_get_wmi_obj')
+    def test_set_disk_host_res(self, mock_get_wmi_obj):
+        mock_diskdrive = mock_get_wmi_obj.return_value
 
         self._vmutils.set_disk_host_res(self._FAKE_RES_PATH,
                                         self._FAKE_MOUNTED_DISK_PATH)
@@ -552,7 +543,7 @@ class VMUtilsTestCase(test_base.OsWinBaseTestCase):
         self._vmutils._jobutils.modify_virt_resource.assert_called_once_with(
             mock_diskdrive)
 
-        mock_wmi.WMI.assert_called_once_with(moniker=self._FAKE_RES_PATH)
+        mock_get_wmi_obj.assert_called_once_with(self._FAKE_RES_PATH)
         self.assertEqual(mock_diskdrive.HostResource,
                          [self._FAKE_MOUNTED_DISK_PATH])
 
@@ -578,8 +569,7 @@ class VMUtilsTestCase(test_base.OsWinBaseTestCase):
             mock.sentinel.fake_new_mounted_disk_path,
             mock_rasds[0].HostResource[0])
 
-    @mock.patch.object(vmutils, 'wmi', create=True)
-    def test_take_vm_snapshot(self, mock_wmi):
+    def test_take_vm_snapshot(self):
         self._lookup_vm()
 
         mock_svc = self._get_snapshot_service()
@@ -604,11 +594,6 @@ class VMUtilsTestCase(test_base.OsWinBaseTestCase):
         self._vmutils.remove_vm_snapshot(self._FAKE_SNAPSHOT_PATH)
         getattr(mock_svc, self._DESTROY_SNAPSHOT).assert_called_with(
             self._FAKE_SNAPSHOT_PATH)
-
-    def test_enable_vm_metrics_collection(self):
-        self._vmutils.enable_vm_metrics_collection(mock.sentinel.vm_name)
-        method = self._vmutils._metricsutils.enable_vm_metrics_collection
-        method.assert_called_once_with(mock.sentinel.vm_name)
 
     @mock.patch.object(_wqlutils, 'get_element_associated_class')
     def test_get_vm_dvd_disk_paths(self, mock_get_element_associated_class):
@@ -937,8 +922,8 @@ class VMUtilsTestCase(test_base.OsWinBaseTestCase):
         with mock.patch.object(self._vmutils,
                                '_get_event_wql_query') as mock_get_query:
             listener = self._vmutils.get_vm_power_state_change_listener(
-                mock.sentinel.timeframe,
-                mock.sentinel.filtered_states)
+                timeframe=mock.sentinel.timeframe,
+                filtered_states=mock.sentinel.filtered_states)
 
             mock_get_query.assert_called_once_with(
                 cls=self._vmutils._COMPUTER_SYSTEM_CLASS,
@@ -951,6 +936,31 @@ class VMUtilsTestCase(test_base.OsWinBaseTestCase):
                 fields=[self._vmutils._VM_ENABLED_STATE_PROP])
 
             self.assertEqual(watcher.return_value, listener)
+
+    def test_vm_power_state_change_event_handler(self):
+        self._mock_wmi.x_wmi_timed_out = exceptions.HyperVException
+
+        enabled_state = constants.HYPERV_VM_STATE_ENABLED
+        hv_enabled_state = self._vmutils._vm_power_states_map[enabled_state]
+        fake_event = mock.Mock(ElementName=mock.sentinel.vm_name,
+                               EnabledState=hv_enabled_state)
+        fake_callback = mock.Mock()
+
+        fake_listener = (
+            self._vmutils._conn.Msvm_ComputerSystem.watch_for.return_value)
+        fake_listener.side_effect = (self._mock_wmi.x_wmi_timed_out,
+                                     fake_event, KeyboardInterrupt)
+
+        handler = self._vmutils.get_vm_power_state_change_listener(
+            get_handler=True)
+        # This is supposed to run as a daemon, so we'll just cause an
+        # exception in order to be able to test the method.
+        self.assertRaises(KeyboardInterrupt, handler, fake_callback)
+
+        fake_callback.assert_called_once_with(mock.sentinel.vm_name,
+                                              enabled_state)
+        fake_listener.assert_has_calls(
+            [mock.call(self._vmutils._DEFAULT_EVENT_TIMEOUT_MS)] * 3)
 
     def _test_get_vm_generation(self, vm_gen):
         mock_settings = self._lookup_vm()

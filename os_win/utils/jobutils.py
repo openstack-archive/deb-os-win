@@ -18,25 +18,20 @@
 Base Utility class for operations on Hyper-V.
 """
 
-import sys
 import time
 
-if sys.platform == 'win32':
-    import wmi
-
 from oslo_log import log as logging
-from oslo_service import loopingcall
 
 from os_win._i18n import _
+from os_win import _utils
 from os_win import constants
 from os_win import exceptions
+from os_win.utils import baseutils
 
 LOG = logging.getLogger(__name__)
 
 
-class JobUtils(object):
-
-    _WMI_NAMESPACE = '//%s/root/virtualization/v2'
+class JobUtils(baseutils.BaseUtilsVirt):
 
     _CONCRETE_JOB_CLASS = "Msvm_ConcreteJob"
 
@@ -46,21 +41,6 @@ class JobUtils(object):
                              constants.JOB_STATE_TERMINATED,
                              constants.JOB_STATE_KILLED,
                              constants.JOB_STATE_COMPLETED_WITH_WARNINGS]
-
-    def __init__(self, host='.'):
-        self._vs_man_svc_attr = None
-        if sys.platform == 'win32':
-            self._init_hyperv_wmi_conn(host)
-
-    def _init_hyperv_wmi_conn(self, host):
-        self._conn = wmi.WMI(moniker=self._WMI_NAMESPACE % host)
-
-    @property
-    def _vs_man_svc(self):
-        if not self._vs_man_svc_attr:
-            self._vs_man_svc_attr = (
-                self._conn.Msvm_VirtualSystemManagementService()[0])
-        return self._vs_man_svc_attr
 
     def check_ret_val(self, ret_val, job_path, success_values=[0]):
         if ret_val in [constants.WMI_JOB_STATUS_STARTED,
@@ -74,11 +54,11 @@ class JobUtils(object):
         """Poll WMI job state and wait for completion."""
 
         job_wmi_path = job_path.replace('\\', '/')
-        job = wmi.WMI(moniker=job_wmi_path)
+        job = self._get_wmi_obj(job_wmi_path)
 
         while job.JobState == constants.WMI_JOB_STATE_RUNNING:
             time.sleep(0.1)
-            job = wmi.WMI(moniker=job_wmi_path)
+            job = self._get_wmi_obj(job_wmi_path)
 
         if job.JobState == constants.JOB_STATE_KILLED:
             LOG.debug("WMI job killed with status %s.", job.JobState)
@@ -122,7 +102,7 @@ class JobUtils(object):
             AffectedElement=element.path_())
         for job in jobs_affecting_element:
             element_jobs.append(
-                wmi.WMI(moniker=job.AffectingElement.replace('\\', '/')))
+                self._get_wmi_obj(job.AffectingElement.replace('\\', '/')))
 
         for job in element_jobs:
             if job and job.Cancellable and not self._is_job_completed(job):
@@ -142,8 +122,7 @@ class JobUtils(object):
 
     # modify_virt_resource can fail, especially while setting up the VM's
     # serial port connection. Retrying the operation will yield success.
-    @loopingcall.RetryDecorator(max_retry_count=5, max_sleep_time=1,
-                                exceptions=(exceptions.HyperVException, ))
+    @_utils.retry_decorator(exceptions=exceptions.HyperVException)
     def modify_virt_resource(self, virt_resource):
         (job_path, out_set_data,
          ret_val) = self._vs_man_svc.ModifyResourceSettings(
@@ -158,8 +137,7 @@ class JobUtils(object):
     def add_virt_feature(self, virt_feature, parent):
         self.add_multiple_virt_features([virt_feature], parent)
 
-    @loopingcall.RetryDecorator(max_retry_count=5, max_sleep_time=1,
-                                exceptions=(exceptions.HyperVException, ))
+    @_utils.retry_decorator(exceptions=exceptions.HyperVException)
     def add_multiple_virt_features(self, virt_features, parent):
         (job_path, out_set_data,
          ret_val) = self._vs_man_svc.AddFeatureSettings(
