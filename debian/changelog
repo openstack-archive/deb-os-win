@@ -1,3 +1,9 @@
+python-os-win (0.2.3-1) experimental; urgency=medium
+
+  * New upstream release.
+
+ -- Thomas Goirand <zigo@debian.org>  Mon, 21 Mar 2016 14:41:37 +0100
+
 python-os-win (0.2.2-1) experimental; urgency=medium
 
   [ Ondřej Nový ]
