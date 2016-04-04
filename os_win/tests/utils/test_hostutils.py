@@ -13,10 +13,10 @@
 #    under the License.
 
 import mock
-from oslotest import base
 
 from os_win import constants
 from os_win import exceptions
+from os_win.tests import test_base
 from os_win.utils import hostutils
 
 
@@ -31,7 +31,7 @@ class FakeCPUSpec(object):
     NumberOfLogicalProcessors = mock.sentinel.cpu_procs
 
 
-class HostUtilsTestCase(base.BaseTestCase):
+class HostUtilsTestCase(test_base.OsWinBaseTestCase):
     """Unit tests for the Hyper-V hostutils class."""
 
     _DEVICE_ID = "Microsoft:UUID\\0\\0"
@@ -47,7 +47,7 @@ class HostUtilsTestCase(base.BaseTestCase):
     def setUp(self):
         self._hostutils = hostutils.HostUtils()
         self._hostutils._conn_cimv2 = mock.MagicMock()
-        self._hostutils._conn = mock.MagicMock()
+        self._hostutils._conn_attr = mock.MagicMock()
 
         super(HostUtilsTestCase, self).setUp()
 
@@ -213,9 +213,9 @@ class HostUtilsTestCase(base.BaseTestCase):
         system_memory.path_.return_value = 'fake_wmi_obj_path'
         numa_node_memory = mock.MagicMock()
         numa_node_memory.path_.return_value = 'fake_wmi_obj_path1'
-        numa_node_assoc_paths = ['fake_wmi_obj_path']
+        numa_node_assoc = [system_memory]
         memory_info = self._hostutils._get_numa_memory_info(
-            numa_node_assoc_paths, [system_memory, numa_node_memory])
+            numa_node_assoc, [system_memory, numa_node_memory])
 
         self.assertEqual(system_memory, memory_info)
 
@@ -230,8 +230,8 @@ class HostUtilsTestCase(base.BaseTestCase):
         host_cpu.path_.return_value = 'fake_wmi_obj_path'
         vm_cpu = mock.MagicMock()
         vm_cpu.path_.return_value = 'fake_wmi_obj_path1'
-        numa_node_assoc_paths = ['fake_wmi_obj_path']
-        cpu_info = self._hostutils._get_numa_cpu_info(numa_node_assoc_paths,
+        numa_node_assoc = [host_cpu]
+        cpu_info = self._hostutils._get_numa_cpu_info(numa_node_assoc,
                                                       [host_cpu, vm_cpu])
 
         self.assertEqual([host_cpu], cpu_info)

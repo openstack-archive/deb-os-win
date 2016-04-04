@@ -13,14 +13,14 @@
 #    under the License.
 
 import mock
-from oslotest import base
 
 from os_win import constants
 from os_win import exceptions
+from os_win.tests import test_base
 from os_win.utils import jobutils
 
 
-class JobUtilsTestCase(base.BaseTestCase):
+class JobUtilsTestCase(test_base.OsWinBaseTestCase):
     """Unit tests for the Hyper-V JobUtils class."""
 
     _FAKE_RET_VAL = 0
@@ -35,7 +35,7 @@ class JobUtilsTestCase(base.BaseTestCase):
     def setUp(self):
         super(JobUtilsTestCase, self).setUp()
         self.jobutils = jobutils.JobUtils()
-        self.jobutils._conn = mock.MagicMock()
+        self.jobutils._conn_attr = mock.MagicMock()
 
     @mock.patch.object(jobutils.JobUtils, '_wait_for_job')
     def test_check_ret_val_started(self, mock_wait_for_job):
@@ -88,8 +88,7 @@ class JobUtilsTestCase(base.BaseTestCase):
         job = self.jobutils._wait_for_job(self._FAKE_JOB_PATH)
         self.assertEqual(mock_job, job)
 
-    @mock.patch.object(jobutils.JobUtils, '_get_wmi_obj')
-    def test_stop_jobs(self, mock_get_wmi_obj):
+    def test_stop_jobs(self):
         mock_job1 = mock.MagicMock(Cancellable=True)
         mock_job2 = mock.MagicMock(Cancellable=True)
         mock_job3 = mock.MagicMock(Cancellable=True)
@@ -97,10 +96,10 @@ class JobUtilsTestCase(base.BaseTestCase):
         mock_job2.JobState = 3
         mock_job3.JobState = constants.JOB_STATE_KILLED
 
-        mock_get_wmi_obj.side_effect = [mock_job1, mock_job2, mock_job3]
-
         mock_vm = mock.MagicMock()
-        mock_vm_jobs = [mock_job1, mock_job2, mock_job3]
+        mock_vm_jobs = [mock.Mock(AffectingElement=x) for x in [mock_job1,
+                                                                mock_job2,
+                                                                mock_job3]]
         self.jobutils._conn.Msvm_AffectedJobElement.return_value = mock_vm_jobs
 
         self.jobutils.stop_jobs(mock_vm)
@@ -152,7 +151,8 @@ class JobUtilsTestCase(base.BaseTestCase):
     @mock.patch('time.sleep')
     def _check_modify_virt_resource_max_retries(
             self, mock_sleep, side_effect, num_calls=1, expected_fail=False):
-        mock_svc = self.jobutils._vs_man_svc
+        mock_svc = mock.MagicMock()
+        self.jobutils._vs_man_svc_attr = mock_svc
         mock_svc.ModifyResourceSettings.side_effect = side_effect
         mock_res_setting_data = mock.MagicMock()
         mock_res_setting_data.GetText_.return_value = mock.sentinel.res_data
@@ -191,7 +191,8 @@ class JobUtilsTestCase(base.BaseTestCase):
 
     def _test_virt_method(self, vsms_method_name, return_count,
                           utils_method_name, with_mock_vm, *args, **kwargs):
-        mock_svc = self.jobutils._vs_man_svc
+        mock_svc = mock.MagicMock()
+        self.jobutils._vs_man_svc_attr = mock_svc
         vsms_method = getattr(mock_svc, vsms_method_name)
         mock_rsd = self._mock_vsms_method(vsms_method, return_count)
         if with_mock_vm:

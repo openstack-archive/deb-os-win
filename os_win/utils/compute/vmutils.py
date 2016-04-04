@@ -21,6 +21,7 @@ Hyper-V Server / Windows Server 2012.
 """
 
 import sys
+import time
 import uuid
 
 if sys.platform == 'win32':
@@ -32,7 +33,7 @@ from oslo_utils import uuidutils
 import six
 from six.moves import range  # noqa
 
-from os_win._i18n import _, _LW
+from os_win._i18n import _, _LE, _LW
 from os_win import _utils
 from os_win import constants
 from os_win import exceptions
@@ -122,7 +123,7 @@ class VMUtils(baseutils.BaseUtilsVirt):
     _DEFAULT_EVENT_TIMEOUT_MS = 2000
 
     def __init__(self, host='.'):
-        super(VMUtils, self).__init__()
+        super(VMUtils, self).__init__(host)
         self._jobutils = jobutils.JobUtils()
         self._pathutils = pathutils.PathUtils()
         self._enabled_states_map = {v: k for k, v in
@@ -188,16 +189,16 @@ class VMUtils(baseutils.BaseUtilsVirt):
         settings = self.get_vm_summary_info(vm_name)
         return settings['EnabledState']
 
-    def _lookup_vm_check(self, vm_name, as_vssd=True):
-
-        vm = self._lookup_vm(vm_name, as_vssd)
+    def _lookup_vm_check(self, vm_name, as_vssd=True, for_update=False):
+        vm = self._lookup_vm(vm_name, as_vssd, for_update)
         if not vm:
             raise exceptions.HyperVVMNotFoundException(vm_name=vm_name)
         return vm
 
-    def _lookup_vm(self, vm_name, as_vssd=True):
+    def _lookup_vm(self, vm_name, as_vssd=True, for_update=False):
         if as_vssd:
-            vms = self._conn.Msvm_VirtualSystemSettingData(
+            conn = self._compat_conn if for_update else self._conn
+            vms = conn.Msvm_VirtualSystemSettingData(
                 ElementName=vm_name,
                 VirtualSystemType=self._VIRTUAL_SYSTEM_TYPE_REALIZED)
         else:
@@ -221,7 +222,7 @@ class VMUtils(baseutils.BaseUtilsVirt):
     def _set_vm_memory(self, vmsetting, memory_mb, memory_per_numa_node,
                        dynamic_memory_ratio):
         mem_settings = _wqlutils.get_element_associated_class(
-            self._conn, self._MEMORY_SETTING_DATA_CLASS,
+            self._compat_conn, self._MEMORY_SETTING_DATA_CLASS,
             element_instance_id=vmsetting.InstanceID)[0]
 
         max_mem = int(memory_mb)
@@ -250,7 +251,7 @@ class VMUtils(baseutils.BaseUtilsVirt):
     def _set_vm_vcpus(self, vmsetting, vcpus_num, vcpus_per_numa_node,
                       limit_cpu_features):
         procsetting = _wqlutils.get_element_associated_class(
-            self._conn, self._PROCESSOR_SETTING_DATA_CLASS,
+            self._compat_conn, self._PROCESSOR_SETTING_DATA_CLASS,
             element_instance_id=vmsetting.InstanceID)[0]
 
         vcpus = int(vcpus_num)
@@ -273,7 +274,7 @@ class VMUtils(baseutils.BaseUtilsVirt):
                            limit_cpu_features)
 
     def check_admin_permissions(self):
-        if not self._conn.Msvm_VirtualSystemManagementService():
+        if not self._compat_conn.Msvm_VirtualSystemManagementService():
             raise exceptions.HyperVAuthorizationException()
 
     def create_vm(self, *args, **kwargs):
@@ -314,7 +315,7 @@ class VMUtils(baseutils.BaseUtilsVirt):
 
     def _create_vm_obj(self, vm_name, vnuma_enabled, vm_gen, notes,
                        instance_path):
-        vs_data = self._conn.Msvm_VirtualSystemSettingData.new()
+        vs_data = self._compat_conn.Msvm_VirtualSystemSettingData.new()
         vs_data.ElementName = vm_name
         vs_data.Notes = notes
         # Don't start automatically on host boot
@@ -391,20 +392,20 @@ class VMUtils(baseutils.BaseUtilsVirt):
                     'parent': scsi_controller_path.replace("'", "''")})
 
     def _get_new_setting_data(self, class_name):
-        obj = self._conn.query("SELECT * FROM %s WHERE InstanceID "
-                                "LIKE '%%\\Default'" % class_name)[0]
+        obj = self._compat_conn.query("SELECT * FROM %s WHERE InstanceID "
+                                      "LIKE '%%\\Default'" % class_name)[0]
         return obj
 
     def _get_new_resource_setting_data(self, resource_sub_type,
                                        class_name=None):
         if class_name is None:
             class_name = self._RESOURCE_ALLOC_SETTING_DATA_CLASS
-        obj = self._conn.query("SELECT * FROM %(class_name)s "
-                                "WHERE ResourceSubType = "
-                                "'%(res_sub_type)s' AND "
-                                "InstanceID LIKE '%%\\Default'" %
-                                {"class_name": class_name,
-                                 "res_sub_type": resource_sub_type})[0]
+        obj = self._compat_conn.query("SELECT * FROM %(class_name)s "
+                                      "WHERE ResourceSubType = "
+                                      "'%(res_sub_type)s' AND "
+                                      "InstanceID LIKE '%%\\Default'" %
+                                      {"class_name": class_name,
+                                       "res_sub_type": resource_sub_type})[0]
         return obj
 
     def attach_scsi_drive(self, vm_name, path, drive_type=constants.DISK):
@@ -482,7 +483,7 @@ class VMUtils(baseutils.BaseUtilsVirt):
 
         if serial:
             # Apparently this can't be set when the resource is added.
-            diskdrive = self._get_wmi_obj(diskdrive_path)
+            diskdrive = self._get_wmi_obj(diskdrive_path, True)
             diskdrive.ElementName = serial
             self._jobutils.modify_virt_resource(diskdrive)
 
@@ -499,7 +500,7 @@ class VMUtils(baseutils.BaseUtilsVirt):
         return disk_resource.AddressOnParent
 
     def set_disk_host_res(self, disk_res_path, mounted_disk_path):
-        diskdrive = self._get_wmi_obj(disk_res_path)
+        diskdrive = self._get_wmi_obj(disk_res_path, True)
         diskdrive.HostResource = [mounted_disk_path]
         self._jobutils.modify_virt_resource(diskdrive)
 
@@ -614,7 +615,7 @@ class VMUtils(baseutils.BaseUtilsVirt):
 
     def _get_vm_disks(self, vmsettings):
         rasds = _wqlutils.get_element_associated_class(
-            self._conn, self._STORAGE_ALLOC_SETTING_DATA_CLASS,
+            self._compat_conn, self._STORAGE_ALLOC_SETTING_DATA_CLASS,
             element_instance_id=vmsettings.InstanceID)
         disk_resources = [r for r in rasds if
                           r.ResourceSubType in
@@ -624,7 +625,7 @@ class VMUtils(baseutils.BaseUtilsVirt):
         if (self._RESOURCE_ALLOC_SETTING_DATA_CLASS !=
                 self._STORAGE_ALLOC_SETTING_DATA_CLASS):
             rasds = _wqlutils.get_element_associated_class(
-                self._conn, self._RESOURCE_ALLOC_SETTING_DATA_CLASS,
+                self._compat_conn, self._RESOURCE_ALLOC_SETTING_DATA_CLASS,
                 element_instance_id=vmsettings.InstanceID)
 
         volume_resources = [r for r in rasds if
@@ -641,20 +642,22 @@ class VMUtils(baseutils.BaseUtilsVirt):
 
     def take_vm_snapshot(self, vm_name):
         vm = self._lookup_vm_check(vm_name, as_vssd=False)
-        vs_snap_svc = self._conn.Msvm_VirtualSystemSnapshotService()[0]
+        vs_snap_svc = self._compat_conn.Msvm_VirtualSystemSnapshotService()[0]
 
         (job_path, snp_setting_data, ret_val) = vs_snap_svc.CreateSnapshot(
             AffectedSystem=vm.path_(),
             SnapshotType=self._SNAPSHOT_FULL)
         self._jobutils.check_ret_val(ret_val, job_path)
 
-        snp_setting_data_path = self._conn.Msvm_MostCurrentSnapshotInBranch(
-            Antecedent=vm.path_())[0].Dependent
+        vm_path = vm.path_().lower()
+        current_snapshots = self._conn.Msvm_MostCurrentSnapshotInBranch()
+        snp_setting_data = [s for s in current_snapshots if
+                            s.Antecedent.path_().lower() == vm_path][0]
 
-        return snp_setting_data_path
+        return snp_setting_data.Dependent.path_()
 
     def remove_vm_snapshot(self, snapshot_path):
-        vs_snap_svc = self._conn.Msvm_VirtualSystemSnapshotService()[0]
+        vs_snap_svc = self._compat_conn.Msvm_VirtualSystemSnapshotService()[0]
         (job_path, ret_val) = vs_snap_svc.DestroySnapshot(snapshot_path)
         self._jobutils.check_ret_val(ret_val, job_path)
 
@@ -705,7 +708,7 @@ class VMUtils(baseutils.BaseUtilsVirt):
                      'res_sub_type_virt': self._HARD_DISK_RES_SUB_TYPE,
                      'res_sub_type_dvd': self._DVD_DISK_RES_SUB_TYPE})
 
-        disk_resources = self._conn.query(query)
+        disk_resources = self._compat_conn.query(query)
 
         for disk_resource in disk_resources:
             if disk_resource.HostResource:
@@ -751,7 +754,7 @@ class VMUtils(baseutils.BaseUtilsVirt):
         vmsettings = self._lookup_vm_check(vm_name)
 
         rasds = _wqlutils.get_element_associated_class(
-            self._conn, self._SERIAL_PORT_SETTING_DATA_CLASS,
+            self._compat_conn, self._SERIAL_PORT_SETTING_DATA_CLASS,
             element_instance_id=vmsettings.InstanceID)
         serial_port = (
             [r for r in rasds if
@@ -766,7 +769,7 @@ class VMUtils(baseutils.BaseUtilsVirt):
 
     def _get_vm_serial_ports(self, vmsettings):
         rasds = _wqlutils.get_element_associated_class(
-            self._conn, self._SERIAL_PORT_SETTING_DATA_CLASS,
+            self._compat_conn, self._SERIAL_PORT_SETTING_DATA_CLASS,
             element_instance_id=vmsettings.InstanceID)
         serial_ports = (
             [r for r in rasds if
@@ -822,9 +825,23 @@ class VMUtils(baseutils.BaseUtilsVirt):
                     vm_state = event.EnabledState
                     vm_power_state = self.get_vm_power_state(vm_state)
 
-                    callback(vm_name, vm_power_state)
+                    try:
+                        callback(vm_name, vm_power_state)
+                    except Exception:
+                        err_msg = _LE("Executing VM power state change event "
+                                      "callback failed. "
+                                      "VM name: %(vm_name)s, "
+                                      "VM power state: %(vm_power_state)s.")
+                        LOG.exception(err_msg,
+                                      dict(vm_name=vm_name,
+                                           vm_power_state=vm_power_state))
                 except wmi.x_wmi_timed_out:
                     pass
+                except Exception:
+                    LOG.exception(
+                        _LE("The VM power state change event listener "
+                            "encountered an unexpected exception."))
+                    time.sleep(event_timeout / 1000)
 
         return _handle_events if get_handler else listener
 
@@ -870,9 +887,14 @@ class VMUtils(baseutils.BaseUtilsVirt):
 
     def get_vm_generation(self, vm_name):
         vssd = self._lookup_vm_check(vm_name)
-        if hasattr(vssd, self._VIRTUAL_SYSTEM_SUBTYPE):
+        try:
             # expected format: 'Microsoft:Hyper-V:SubType:2'
             return int(vssd.VirtualSystemSubType.split(':')[-1])
+        except Exception:
+            # NOTE(claudiub): The Msvm_VirtualSystemSettingData object does not
+            # contain the VirtualSystemSubType field on Windows Hyper-V /
+            # Server 2012.
+            pass
         return constants.VM_GEN_1
 
     def stop_vm_jobs(self, vm_name):
@@ -927,10 +949,10 @@ class VMUtils(baseutils.BaseUtilsVirt):
             drive_path, is_physical=is_physical)
 
         rasd_path = drive.path_() if is_physical else drive.Parent
-        bssd_path = self._conn.Msvm_LogicalIdentity(
+        bssd = self._conn.Msvm_LogicalIdentity(
             SystemElement=rasd_path)[0].SameElement
 
-        return bssd_path
+        return bssd.path_()
 
     def set_boot_order(self, vm_name, device_boot_order):
         if self.get_vm_generation(vm_name) == constants.VM_GEN_1:
@@ -939,7 +961,7 @@ class VMUtils(baseutils.BaseUtilsVirt):
             self._set_boot_order_gen2(vm_name, device_boot_order)
 
     def _set_boot_order_gen1(self, vm_name, device_boot_order):
-        vssd = self._lookup_vm_check(vm_name)
+        vssd = self._lookup_vm_check(vm_name, for_update=True)
         vssd.BootOrder = tuple(device_boot_order)
 
         self._modify_virtual_system(vssd)
@@ -1006,7 +1028,7 @@ class VMUtils(baseutils.BaseUtilsVirt):
                                        vram_bytes=vram_bytes)
 
         rasds = _wqlutils.get_element_associated_class(
-            self._conn, self._CIM_RES_ALLOC_SETTING_DATA_CLASS,
+            self._compat_conn, self._CIM_RES_ALLOC_SETTING_DATA_CLASS,
             element_uuid=vm.Name)
         if [r for r in rasds if r.ResourceSubType ==
                 self._SYNTH_3D_DISP_CTRL_RES_SUB_TYPE]:

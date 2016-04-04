@@ -26,7 +26,8 @@ from os_win.utils.storage.initiator import iscsi_cli_utils
 hyper_opts = [
     cfg.BoolOpt('force_volumeutils_v1',
                 default=False,
-                help='Force V1 volume utility class'),
+                help='DEPRECATED: Force V1 volume utility class',
+                deprecated_for_removal=True),
 ]
 
 CONF = cfg.CONF
@@ -124,6 +125,11 @@ utils_map = {
             'min_version': 10,
             'max_version': None,
             'path': 'os_win.utils.compute.vmutils10.VMUtils10'}},
+    'clusterutils': {
+        'ClusterUtils': {
+            'min_version': 6.2,
+            'max_version': None,
+            'path': 'os_win.utils.compute.clusterutils.ClusterUtils'}},
 }
 
 
@@ -210,3 +216,7 @@ def get_fc_utils():
 
 def get_diskutils():
     return _get_class(class_type='diskutils')
+
+
+def get_clusterutils():
+    return _get_class(class_type='clusterutils')

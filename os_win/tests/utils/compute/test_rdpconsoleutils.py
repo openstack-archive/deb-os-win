@@ -13,17 +13,17 @@
 #    under the License.
 
 import mock
-from oslotest import base
 
+from os_win.tests import test_base
 from os_win.utils.compute import rdpconsoleutils
 
 
-class RDPConsoleUtilsTestCase(base.BaseTestCase):
+class RDPConsoleUtilsTestCase(test_base.OsWinBaseTestCase):
     _FAKE_RDP_PORT = 1000
 
     def setUp(self):
         self._rdpconsoleutils = rdpconsoleutils.RDPConsoleUtils()
-        self._rdpconsoleutils._conn = mock.MagicMock()
+        self._rdpconsoleutils._conn_attr = mock.MagicMock()
 
         super(RDPConsoleUtilsTestCase, self).setUp()
 
