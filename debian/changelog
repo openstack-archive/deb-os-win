@@ -1,3 +1,9 @@
+python-os-win (0.4.1-2) unstable; urgency=medium
+
+  * Uploading to unstable.
+
+ -- Thomas Goirand <zigo@debian.org>  Wed, 06 Apr 2016 08:44:51 +0000
+
 python-os-win (0.4.1-1) experimental; urgency=medium
 
   * New upstream release.
