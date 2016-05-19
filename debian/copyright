@@ -1,6 +1,6 @@
 Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: os-win
-Source: git://github.com/openstack/os-win.git
+Source: https://github.com/openstack/os-win
 
 Files: *
 Copyright: (c) 2013, Cloudbase Solutions Srl
