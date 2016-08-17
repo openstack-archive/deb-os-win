@@ -1,0 +1,10 @@
+Code-Review+1: Rushi Agrawal <rushi.openstack@gmail.com>
+Code-Review+2: Claudiu Belu <cbelu@cloudbasesolutions.com>
+Code-Review+1: Pandiyan <maestropandy@gmail.com>
+Workflow+1: Claudiu Belu <cbelu@cloudbasesolutions.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Wed, 27 Jul 2016 12:57:14 +0000
+Reviewed-on: https://review.openstack.org/345842
+Project: openstack/deb-os-win
+Branch: refs/heads/master

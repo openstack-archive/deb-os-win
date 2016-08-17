@@ -1,0 +1,9 @@
+Code-Review+2: Lucian Petrut <lpetrut@cloudbasesolutions.com>
+Code-Review+2: Adelina Tuvenie <atuvenie@cloudbasesolutions.com>
+Workflow+1: Adelina Tuvenie <atuvenie@cloudbasesolutions.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Wed, 30 Mar 2016 11:49:10 +0000
+Reviewed-on: https://review.openstack.org/299038
+Project: openstack/deb-os-win
+Branch: refs/heads/master

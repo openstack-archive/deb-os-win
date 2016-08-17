@@ -1,0 +1,8 @@
+Code-Review+2: Claudiu Belu <cbelu@cloudbasesolutions.com>
+Workflow+1: Claudiu Belu <cbelu@cloudbasesolutions.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Wed, 30 Mar 2016 22:48:20 +0000
+Reviewed-on: https://review.openstack.org/299595
+Project: openstack/deb-os-win
+Branch: refs/heads/master
