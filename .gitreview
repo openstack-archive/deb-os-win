@@ -1,5 +1,6 @@
 [gerrit]
 host=review.openstack.org
 port=29418
-project=openstack/os-win.git
+project=openstack/deb-os-win.git
 defaultbranch=stable/mitaka
+defaultbranch=debian/newton
