@@ -5,6 +5,7 @@ python-os-win (0.4.1-3) UNRELEASED; urgency=medium
   * d/copyright: Changed source URL to https protocol
   * d/s/options: extend-diff-ignore of .gitreview
   * d/control: Using OpenStack's Gerrit as VCS URLs.
+  * Bumped debhelper compat version to 10
 
  -- Ondřej Nový <novy@ondrej.org>  Sat, 09 Apr 2016 19:30:41 +0200
 
